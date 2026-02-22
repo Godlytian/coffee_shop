@@ -881,7 +881,6 @@ class CartProvider extends ChangeNotifier {
     required String orderType,
     String? paymentMethod,
     num? totalPaymentReceived,
-    Map<String, int>? cashNominalBreakdown,
     num? changeAmount,
     String? status,
   }) async {
@@ -902,7 +901,6 @@ class CartProvider extends ChangeNotifier {
       'type': orderType,
       'payment_method': paymentMethod,
       'total_payment_received': totalPaymentReceived,
-      'cash_nominal_breakdown': cashNominalBreakdown,
       'change_amount': changeAmount,
       'customer_name': customerName,
       'notes': (tableName == null || tableName.isEmpty)
@@ -925,7 +923,6 @@ class CartProvider extends ChangeNotifier {
             'type': orderType,
             'payment_method': paymentMethod,
             'total_payment_received': totalPaymentReceived,
-            'cash_nominal_breakdown': cashNominalBreakdown,
             'change_amount': changeAmount,
             'customer_name': customerName,
             'notes': (tableName == null || tableName.isEmpty)
@@ -975,7 +972,6 @@ class CartProvider extends ChangeNotifier {
     required String orderType,
     String paymentMethod = 'cash',
     num? totalPaymentReceived,
-    Map<String, int>? cashNominalBreakdown,
     num? changeAmount,
     String status = 'active',
     int? parentOrderId,
@@ -1017,7 +1013,6 @@ class CartProvider extends ChangeNotifier {
           'order_source': 'cashier',
           'payment_method': paymentMethod,
           'total_payment_received': totalPaymentReceived,
-          'cash_nominal_breakdown': cashNominalBreakdown,
           'change_amount': changeAmount,
           'customer_name': customerName,
           'parent_order_id': parentOrderId,
@@ -1102,7 +1097,6 @@ class CartProvider extends ChangeNotifier {
           'order_source': 'cashier',
           'payment_method': paymentMethod,
           'total_payment_received': totalPaymentReceived,
-          'cash_nominal_breakdown': cashNominalBreakdown,
           'change_amount': changeAmount,
           'customer_name': customerName,
           'parent_order_id': parentOrderId,

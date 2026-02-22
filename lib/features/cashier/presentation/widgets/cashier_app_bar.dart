@@ -429,6 +429,37 @@ extension CashierAppBarMethods on _ProductListScreenState {
               }
 
               try {
+                final existingOpenShift = await supabase
+                    .from('shifts')
+                    .select('id, current_cashier_id')
+                    .eq('status', 'open')
+                    .eq('branch_id', branchId)
+                    .eq('current_cashier_id', cashierId)
+                    .order('started_at', ascending: false)
+                    .limit(1)
+                    .maybeSingle();
+
+                if (existingOpenShift != null) {
+                  if (!mounted) return;
+                  final existingShiftId = (existingOpenShift['id'] as num?)
+                      ?.toInt();
+                  final existingCashierId =
+                      (existingOpenShift['current_cashier_id'] as num?)
+                          ?.toInt();
+                  setState(() {
+                    _activeShiftId = existingShiftId;
+                    _activeCashierId = existingCashierId;
+                  });
+                  await _cacheActiveShiftLocally(
+                    shiftId: existingShiftId,
+                    cashierId: existingCashierId,
+                  );
+                  if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+                  _showDropdownSnackbar(
+                    'Shift already open. Continuing existing shift.',
+                  );
+                  return;
+                }
                 final created = await supabase
                     .from('shifts')
                     .insert({
@@ -454,6 +485,44 @@ extension CashierAppBarMethods on _ProductListScreenState {
                 );
                 if (dialogContext.mounted) Navigator.of(dialogContext).pop();
                 _showDropdownSnackbar('Shift opened successfully.');
+              } on PostgrestException catch (error) {
+                final isDuplicateOpenShift =
+                    error.code == '23505' &&
+                    error.message.toLowerCase().contains('uq_shifts_one_open');
+                if (isDuplicateOpenShift) {
+                  final existingOpenShift = await supabase
+                      .from('shifts')
+                      .select('id, current_cashier_id')
+                      .eq('status', 'open')
+                      .eq('branch_id', branchId)
+                      .eq('current_cashier_id', cashierId)
+                      .order('started_at', ascending: false)
+                      .limit(1)
+                      .maybeSingle();
+                  if (existingOpenShift != null && mounted) {
+                    final existingShiftId = (existingOpenShift['id'] as num?)
+                        ?.toInt();
+                    final existingCashierId =
+                        (existingOpenShift['current_cashier_id'] as num?)
+                            ?.toInt();
+                    setState(() {
+                      _activeShiftId = existingShiftId;
+                      _activeCashierId = existingCashierId;
+                    });
+                    await _cacheActiveShiftLocally(
+                      shiftId: existingShiftId,
+                      cashierId: existingCashierId,
+                    );
+                    if (dialogContext.mounted) {
+                      Navigator.of(dialogContext).pop();
+                    }
+                    _showDropdownSnackbar(
+                      'Shift already open. Continuing existing shift.',
+                    );
+                    return;
+                  }
+                }
+                rethrow;
               } catch (_) {
                 final localShiftId = await _offlineShiftRepository
                     .enqueueOfflineShift(

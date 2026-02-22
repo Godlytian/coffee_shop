@@ -236,471 +236,502 @@ class _ProductListScreenState extends State<ProductListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    const panelAnimationDuration = Duration(milliseconds: 260);
+    const panelFadeDuration = Duration(milliseconds: 80);
+    final dividerWidth = _isCartExpanded ? 0.0 : 36.0;
+    final totalFlexWidth = max(
+      MediaQuery.sizeOf(context).width - dividerWidth,
+      0.0,
+    );
+    final menuColumnWidth = _isCartExpanded ? 0.0 : totalFlexWidth * (4 / 6);
+    final cartColumnWidth = _isCartExpanded
+        ? totalFlexWidth
+        : totalFlexWidth * (2 / 6);
+
     return Scaffold(
       appBar: _buildCashierAppBar(),
-      body: _isCartExpanded
-          ? _buildSplitBoardBody()
-          : Row(
-              children: [
-                Expanded(
-                  flex: 4,
-                  child: Column(
-                    children: [
-                      _buildColumnHeader(
-                        title: 'Menu List',
-                        trailing: PopupMenuButton<String>(
-                          tooltip: 'Menu settings',
-                          icon: const Icon(Icons.more_vert),
-                          itemBuilder: (context) => const [
-                            PopupMenuItem(
-                              value: 'refresh',
-                              child: Text('Refresh menu'),
-                            ),
-                            PopupMenuItem(
-                              value: 'view_settings',
-                              child: Text('View settings'),
-                            ),
-                          ],
-                          onSelected: (value) async {
-                            if (value == 'refresh') {
-                              setState(() => _future = _loadProducts());
-                            } else if (value == 'view_settings') {
-                              await _showMenuViewSettingsDialog();
-                            }
-                          },
-                        ),
-                      ),
-                      Expanded(
-                        child: Container(
-                          color: Colors.grey[100],
-                          child: FutureBuilder<List<Product>>(
-                            future: _future,
-                            builder: (context, snapshot) {
-                              if (snapshot.connectionState ==
-                                  ConnectionState.waiting) {
-                                return const Center(
-                                  child: CircularProgressIndicator(),
-                                );
-                              }
-                              if (snapshot.hasError) {
-                                final errorText = snapshot.error.toString();
-                                final isPolicyError =
-                                    errorText.contains('row-level security') ||
-                                    errorText.contains('permission denied') ||
-                                    errorText.contains('not authorized') ||
-                                    errorText.contains('42501');
-
-                                return Center(
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(24),
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(
-                                          Icons.lock_outline,
-                                          size: 40,
-                                          color: Colors.orange,
-                                        ),
-                                        const SizedBox(height: 12),
-                                        Text(
-                                          isPolicyError
-                                              ? 'Data cannot be read because Supabase Row Level Security policy blocks this client.'
-                                              : 'Error loading menu data.',
-                                          textAlign: TextAlign.center,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          isPolicyError
-                                              ? 'Fix by updating Supabase RLS SELECT policies so this app client is allowed to read products/orders.'
-                                              : errorText,
-                                          textAlign: TextAlign.center,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              }
-                              if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                                return const Center(
-                                  child: Text('No products found!'),
-                                );
-                              }
-
-                              final products = snapshot.data!;
-                              final visibleProducts = products
-                                  .where(
-                                    (product) => !_hiddenMenuCategories
-                                        .contains(product.category),
-                                  )
-                                  .toList(growable: false);
-                              final categories =
-                                  visibleProducts
-                                      .map((product) => product.category)
-                                      .toSet()
-                                      .toList()
-                                    ..sort();
-                              final effectiveSelectedCategory =
-                                  categories.contains(_selectedCategory)
-                                  ? _selectedCategory
-                                  : null;
-                              final filteredProducts =
-                                  effectiveSelectedCategory == null
-                                  ? visibleProducts
-                                  : visibleProducts
-                                        .where(
-                                          (product) =>
-                                              product.category ==
-                                              effectiveSelectedCategory,
-                                        )
-                                        .toList(growable: false);
-
-                              return Column(
-                                children: [
-                                  Expanded(
-                                    child: _buildMenuLayoutContent(
-                                      filteredProducts,
-                                    ),
-                                  ),
-                                  SizedBox(
-                                    height: 56,
-                                    child: ListView(
-                                      scrollDirection: Axis.horizontal,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                      ),
-                                      children: [
-                                        Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 4,
-                                            vertical: 8,
-                                          ),
-                                          child: ChoiceChip(
-                                            label: const Text('All'),
-                                            selected:
-                                                effectiveSelectedCategory ==
-                                                null,
-                                            onSelected: (_) => setState(
-                                              () => _selectedCategory = null,
-                                            ),
-                                          ),
-                                        ),
-                                        ...categories.map(
-                                          (category) => Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 4,
-                                              vertical: 8,
-                                            ),
-                                            child: ChoiceChip(
-                                              label: Text(category),
-                                              selected:
-                                                  effectiveSelectedCategory ==
-                                                  category,
-                                              onSelected: (_) => setState(
-                                                () => _selectedCategory =
-                                                    category,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  flex: 2,
-                  child: Consumer<CartProvider>(
-                    builder: (context, cart, child) {
-                      final hasCurrentOrderDraft =
-                          cart.items.isNotEmpty ||
-                          _customerName != null ||
-                          _tableName != null;
-                      return Column(
+      body: Row(
+        children: [
+          AnimatedContainer(
+            duration: panelAnimationDuration,
+            curve: Curves.easeOutCubic,
+            width: menuColumnWidth,
+            child: menuColumnWidth <= 0
+                ? const SizedBox.shrink()
+                : RepaintBoundary(
+                    child: AnimatedOpacity(
+                      duration: panelFadeDuration,
+                      curve: Curves.easeOutCubic,
+                      opacity: _isCartExpanded ? 0 : 1,
+                      child: Column(
                         children: [
                           _buildColumnHeader(
-                            title: 'Cart',
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                _buildCartExpandToggle(),
-                                if (_isCartSelectionMode)
-                                  TextButton(
-                                    onPressed: cart.items.isEmpty
-                                        ? null
-                                        : _selectAllCartItems,
-                                    child: const Text('Select all'),
-                                  )
-                                else ...[
-                                  PopupMenuButton<String>(
-                                    tooltip: 'Print options',
-                                    icon: const Icon(Icons.print),
-                                    itemBuilder: (context) => const [
-                                      PopupMenuItem(
-                                        value: 'prebill',
-                                        child: Text(
-                                          'Print pre-settlement bill',
+                            title: 'Menu List',
+                            trailing: PopupMenuButton<String>(
+                              tooltip: 'Menu settings',
+                              icon: const Icon(Icons.more_vert),
+                              itemBuilder: (context) => const [
+                                PopupMenuItem(
+                                  value: 'refresh',
+                                  child: Text('Refresh menu'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'view_settings',
+                                  child: Text('View settings'),
+                                ),
+                              ],
+                              onSelected: (value) async {
+                                if (value == 'refresh') {
+                                  setState(() => _future = _loadProducts());
+                                } else if (value == 'view_settings') {
+                                  await _showMenuViewSettingsDialog();
+                                }
+                              },
+                            ),
+                          ),
+                          Expanded(
+                            child: Container(
+                              color: Colors.grey[100],
+                              child: FutureBuilder<List<Product>>(
+                                future: _future,
+                                builder: (context, snapshot) {
+                                  if (snapshot.connectionState ==
+                                      ConnectionState.waiting) {
+                                    return const Center(
+                                      child: CircularProgressIndicator(),
+                                    );
+                                  }
+                                  if (snapshot.hasError) {
+                                    final errorText = snapshot.error.toString();
+                                    final isPolicyError =
+                                        errorText.contains(
+                                          'row-level security',
+                                        ) ||
+                                        errorText.contains(
+                                          'permission denied',
+                                        ) ||
+                                        errorText.contains('not authorized') ||
+                                        errorText.contains('42501');
+
+                                    return Center(
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(24),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                              Icons.lock_outline,
+                                              size: 40,
+                                              color: Colors.orange,
+                                            ),
+                                            const SizedBox(height: 12),
+                                            Text(
+                                              isPolicyError
+                                                  ? 'Data cannot be read because Supabase Row Level Security policy blocks this client.'
+                                                  : 'Error loading menu data.',
+                                              textAlign: TextAlign.center,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              isPolicyError
+                                                  ? 'Fix by updating Supabase RLS SELECT policies so this app client is allowed to read products/orders.'
+                                                  : errorText,
+                                              textAlign: TextAlign.center,
+                                            ),
+                                          ],
                                         ),
                                       ),
-                                      PopupMenuItem(
-                                        value: 'kitchen',
-                                        child: Text('Print to kitchen'),
+                                    );
+                                  }
+                                  if (!snapshot.hasData ||
+                                      snapshot.data!.isEmpty) {
+                                    return const Center(
+                                      child: Text('No products found!'),
+                                    );
+                                  }
+
+                                  final products = snapshot.data!;
+                                  final visibleProducts = products
+                                      .where(
+                                        (product) => !_hiddenMenuCategories
+                                            .contains(product.category),
+                                      )
+                                      .toList(growable: false);
+                                  final categories =
+                                      visibleProducts
+                                          .map((product) => product.category)
+                                          .toSet()
+                                          .toList()
+                                        ..sort();
+                                  final effectiveSelectedCategory =
+                                      categories.contains(_selectedCategory)
+                                      ? _selectedCategory
+                                      : null;
+                                  final filteredProducts =
+                                      effectiveSelectedCategory == null
+                                      ? visibleProducts
+                                      : visibleProducts
+                                            .where(
+                                              (product) =>
+                                                  product.category ==
+                                                  effectiveSelectedCategory,
+                                            )
+                                            .toList(growable: false);
+
+                                  return Column(
+                                    children: [
+                                      Expanded(
+                                        child: _buildMenuLayoutContent(
+                                          filteredProducts,
+                                        ),
                                       ),
-                                    ],
-                                    onSelected: (value) async {
-                                      if (value == 'prebill') {
-                                        await _printPreSettlementBill();
-                                      } else if (value == 'kitchen') {
-                                        await _printKitchenTicket();
-                                      }
-                                    },
-                                  ),
-                                  StreamBuilder<List<Map<String, dynamic>>>(
-                                    stream: _activeOrdersStream,
-                                    builder: (context, snapshot) {
-                                      final activeOrders =
-                                          snapshot.data ??
-                                          <Map<String, dynamic>>[];
-                                      return IconButton(
-                                        tooltip: 'List (active order list)',
-                                        onPressed:
-                                            _showActiveCashierOrdersDialog,
-                                        icon: Stack(
-                                          clipBehavior: Clip.none,
+                                      SizedBox(
+                                        height: 56,
+                                        child: ListView(
+                                          scrollDirection: Axis.horizontal,
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                          ),
                                           children: [
-                                            const Icon(Icons.list_alt),
-                                            if (activeOrders.isNotEmpty)
-                                              Positioned(
-                                                right: -8,
-                                                top: -8,
-                                                child: Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 6,
-                                                        vertical: 2,
-                                                      ),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.blue,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          10,
-                                                        ),
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 4,
+                                                    vertical: 8,
                                                   ),
-                                                  child: Text(
-                                                    activeOrders.length
-                                                        .toString(),
-                                                    style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 11,
-                                                      fontWeight:
-                                                          FontWeight.bold,
+                                              child: ChoiceChip(
+                                                label: const Text('All'),
+                                                selected:
+                                                    effectiveSelectedCategory ==
+                                                    null,
+                                                onSelected: (_) => setState(
+                                                  () =>
+                                                      _selectedCategory = null,
+                                                ),
+                                              ),
+                                            ),
+                                            ...categories.map(
+                                              (category) => Padding(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 4,
+                                                      vertical: 8,
                                                     ),
+                                                child: ChoiceChip(
+                                                  label: Text(category),
+                                                  selected:
+                                                      effectiveSelectedCategory ==
+                                                      category,
+                                                  onSelected: (_) => setState(
+                                                    () => _selectedCategory =
+                                                        category,
                                                   ),
                                                 ),
                                               ),
+                                            ),
                                           ],
                                         ),
-                                      );
-                                    },
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Clear cart',
-                                    onPressed: hasCurrentOrderDraft
-                                        ? _resetCurrentOrderDraft
-                                        : null,
-                                    icon: const Icon(Icons.delete_sweep),
-                                  ),
-                                ],
-                                PopupMenuButton<String>(
-                                  tooltip: 'Cart settings',
-                                  icon: const Icon(Icons.more_vert),
-                                  itemBuilder: (context) => const [
-                                    PopupMenuItem(
-                                      value: 'gabung_nota',
-                                      child: Text('Gabung nota'),
-                                    ),
-                                    PopupMenuItem(
-                                      value: 'pisah_nota',
-                                      child: Text('Pisah nota'),
-                                    ),
-                                    PopupMenuItem(
-                                      value: 'batal_pesanan',
-                                      child: Text('Batal pesanan'),
-                                    ),
-                                  ],
-                                  onSelected: _onCartSettingSelected,
-                                ),
-                              ],
-                            ),
-                          ),
-                          _buildCartOrderDetailsTab(),
-                          Expanded(
-                            child: ClipRect(
-                              child: ListView.builder(
-                                itemCount: cart.items.length,
-                                itemBuilder: (context, index) {
-                                  final entry = cart.items.entries.elementAt(
-                                    index,
-                                  );
-                                  final key = entry.key;
-                                  final item = entry.value;
-
-                                  final isSelected = _selectedCartItems
-                                      .contains(key);
-
-                                  final tile = ListTile(
-                                    onLongPress: () =>
-                                        _enterSelectionModeWithItem(key),
-                                    onTap: () {
-                                      if (_isCartSelectionMode) {
-                                        _toggleSelectedCartItem(key);
-                                        return;
-                                      }
-                                      _openCartItemEditor(key, item);
-                                    },
-                                    title: Text(item.name),
-                                    subtitle: Text(_cartSubtitle(item)),
-                                    trailing: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (_isCartSelectionMode)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                              right: 6,
-                                            ),
-                                            child: Icon(
-                                              isSelected
-                                                  ? Icons.check_circle
-                                                  : Icons
-                                                        .radio_button_unchecked,
-                                              color: isSelected
-                                                  ? Colors.green
-                                                  : Colors.grey,
-                                              size: 18,
-                                            ),
-                                          )
-                                        else if (isSelected)
-                                          const Padding(
-                                            padding: EdgeInsets.only(right: 6),
-                                            child: Icon(
-                                              Icons.check_circle,
-                                              color: Colors.green,
-                                              size: 18,
-                                            ),
-                                          ),
-                                        Text(
-                                          'Rp ${((item.price + _modifierExtraFromData(item.modifiersData)) * item.quantity).toStringAsFixed(2)}',
-                                        ),
-                                      ],
-                                    ),
-                                  );
-
-                                  if (_isCartSelectionMode) {
-                                    return tile;
-                                  }
-
-                                  return Slidable(
-                                    key: ValueKey(key),
-                                    endActionPane: ActionPane(
-                                      motion: const ScrollMotion(),
-                                      extentRatio: 0.24,
-                                      children: [
-                                        SlidableAction(
-                                          onPressed: (_) {
-                                            context
-                                                .read<CartProvider>()
-                                                .removeItem(key);
-                                            setState(() {
-                                              _selectedCartItems.remove(key);
-                                            });
-                                          },
-                                          backgroundColor: Colors.red,
-                                          foregroundColor: Colors.white,
-                                          icon: Icons.delete,
-                                          label: 'Delete',
-                                        ),
-                                      ],
-                                    ),
-                                    child: tile,
+                                      ),
+                                    ],
                                   );
                                 },
                               ),
                             ),
                           ),
-                          Container(
-                            padding: const EdgeInsets.all(20),
-                            color: Colors.grey[200],
-                            child: Column(
-                              children: [
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Text(
-                                      'Total:',
-                                      style: TextStyle(
-                                        fontSize: 20,
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                        ],
+                      ),
+                    ),
+                  ),
+          ),
+          AnimatedContainer(
+            duration: panelAnimationDuration,
+            curve: Curves.easeOutCubic,
+            width: dividerWidth,
+            child: dividerWidth <= 0
+                ? const SizedBox.shrink()
+                : _buildMenuCartDivider(),
+          ),
+          AnimatedContainer(
+            duration: panelAnimationDuration,
+            curve: Curves.easeOutCubic,
+            width: cartColumnWidth,
+            child: RepaintBoundary(
+              child: AnimatedOpacity(
+                duration: panelFadeDuration,
+                curve: Curves.easeOutCubic,
+                opacity: _isCartExpanded ? 1 : 0.96,
+                child: _isCartExpanded
+                    ? _buildSplitBoardBody()
+                    : _buildRegularCartBody(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRegularCartBody() {
+    final hasOrderDetails = _customerName != null || _tableName != null;
+    return Column(
+      children: [
+        Selector<CartProvider, bool>(
+          selector: (_, cart) => cart.items.isNotEmpty,
+          builder: (context, hasCartItems, _) {
+            final hasCurrentOrderDraft = hasCartItems || hasOrderDetails;
+            return _buildColumnHeader(
+              title: 'Cart',
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_isCartSelectionMode)
+                    TextButton(
+                      onPressed: hasCartItems ? _selectAllCartItems : null,
+                      child: const Text('Select all'),
+                    )
+                  else ...[
+                    PopupMenuButton<String>(
+                      tooltip: 'Print options',
+                      icon: const Icon(Icons.print),
+                      itemBuilder: (context) => const [
+                        PopupMenuItem(
+                          value: 'prebill',
+                          child: Text('Print pre-settlement bill'),
+                        ),
+                        PopupMenuItem(
+                          value: 'kitchen',
+                          child: Text('Print to kitchen'),
+                        ),
+                      ],
+                      onSelected: (value) async {
+                        if (value == 'prebill') {
+                          await _printPreSettlementBill();
+                        } else if (value == 'kitchen') {
+                          await _printKitchenTicket();
+                        }
+                      },
+                    ),
+                    StreamBuilder<List<Map<String, dynamic>>>(
+                      stream: _activeOrdersStream,
+                      builder: (context, snapshot) {
+                        final activeOrders =
+                            snapshot.data ?? <Map<String, dynamic>>[];
+                        return IconButton(
+                          tooltip: 'List (active order list)',
+                          onPressed: _showActiveCashierOrdersDialog,
+                          icon: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              const Icon(Icons.list_alt),
+                              if (activeOrders.isNotEmpty)
+                                Positioned(
+                                  right: -8,
+                                  top: -8,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
                                     ),
-                                    Text(
-                                      'Rp ${cart.totalAmount.toStringAsFixed(0)}',
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue,
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Text(
+                                      activeOrders.length.toString(),
                                       style: const TextStyle(
-                                        fontSize: 20,
+                                        color: Colors.white,
+                                        fontSize: 11,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
-                                  ],
+                                  ),
                                 ),
-                                const SizedBox(height: 10),
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: ElevatedButton(
-                                        onPressed: cart.items.isEmpty
-                                            ? null
-                                            : () => _handleSaveCartOrder(cart),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.blue,
-                                          foregroundColor: Colors.white,
-                                        ),
-                                        child: const Text('SAVE'),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: ElevatedButton(
-                                        onPressed: cart.items.isEmpty
-                                            ? null
-                                            : () => _handlePayCartOrder(cart),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.green,
-                                          foregroundColor: Colors.white,
-                                        ),
-                                        child: const Text('PAY'),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                    IconButton(
+                      tooltip: 'Clear cart',
+                      onPressed: hasCurrentOrderDraft
+                          ? _resetCurrentOrderDraft
+                          : null,
+                      icon: const Icon(Icons.delete_sweep),
+                    ),
+                  ],
+                  PopupMenuButton<String>(
+                    tooltip: 'Cart settings',
+                    icon: const Icon(Icons.more_vert),
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(
+                        value: 'gabung_nota',
+                        child: Text('Gabung nota'),
+                      ),
+                      PopupMenuItem(
+                        value: 'pisah_nota',
+                        child: Text('Pisah nota'),
+                      ),
+                      PopupMenuItem(
+                        value: 'batal_pesanan',
+                        child: Text('Batal pesanan'),
+                      ),
+                    ],
+                    onSelected: _onCartSettingSelected,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+        _buildCartOrderDetailsTab(),
+        Expanded(
+          child: Consumer<CartProvider>(
+            builder: (context, cart, _) {
+              return ClipRect(
+                child: ListView.builder(
+                  itemCount: cart.items.length,
+                  itemBuilder: (context, index) {
+                    final entry = cart.items.entries.elementAt(index);
+                    final key = entry.key;
+                    final item = entry.value;
+                    final isSelected = _selectedCartItems.contains(key);
+
+                    final tile = ListTile(
+                      onLongPress: () => _enterSelectionModeWithItem(key),
+                      onTap: () {
+                        if (_isCartSelectionMode) {
+                          _toggleSelectedCartItem(key);
+                          return;
+                        }
+                        _openCartItemEditor(key, item);
+                      },
+                      title: Text(item.name),
+                      subtitle: Text(_cartSubtitle(item)),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_isCartSelectionMode)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: Icon(
+                                isSelected
+                                    ? Icons.check_circle
+                                    : Icons.radio_button_unchecked,
+                                color: isSelected ? Colors.green : Colors.grey,
+                                size: 18,
+                              ),
+                            )
+                          else if (isSelected)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 6),
+                              child: Icon(
+                                Icons.check_circle,
+                                color: Colors.green,
+                                size: 18,
+                              ),
                             ),
+                          Text(
+                            'Rp ${((item.price + _modifierExtraFromData(item.modifiersData)) * item.quantity).toStringAsFixed(2)}',
                           ),
                         ],
-                      );
-                    },
-                  ),
+                      ),
+                    );
+
+                    if (_isCartSelectionMode) return tile;
+
+                    return Slidable(
+                      key: ValueKey(key),
+                      endActionPane: ActionPane(
+                        motion: const ScrollMotion(),
+                        extentRatio: 0.24,
+                        children: [
+                          SlidableAction(
+                            onPressed: (_) {
+                              context.read<CartProvider>().removeItem(key);
+                              setState(() {
+                                _selectedCartItems.remove(key);
+                              });
+                            },
+                            backgroundColor: Colors.red,
+                            foregroundColor: Colors.white,
+                            icon: Icons.delete,
+                            label: 'Delete',
+                          ),
+                        ],
+                      ),
+                      child: tile,
+                    );
+                  },
                 ),
-              ],
-            ),
+              );
+            },
+          ),
+        ),
+        Consumer<CartProvider>(
+          builder: (context, cart, _) {
+            return Container(
+              padding: const EdgeInsets.all(20),
+              color: Colors.grey[200],
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Total:',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        'Rp ${cart.totalAmount.toStringAsFixed(0)}',
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: cart.items.isEmpty
+                              ? null
+                              : () => _handleSaveCartOrder(cart),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                          ),
+                          child: const Text('SAVE'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: cart.items.isEmpty
+                              ? null
+                              : () => _handlePayCartOrder(cart),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                          ),
+                          child: const Text('PAY'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 
@@ -721,24 +752,45 @@ class _ProductListScreenState extends State<ProductListScreen> {
 
   Widget _buildCartExpandToggle() {
     return SizedBox(
-      width: 48,
-      height: 48,
+      width: 32,
+      height: 32,
       child: Material(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(16),
         elevation: 2,
         child: InkWell(
-          borderRadius: BorderRadius.circular(24),
-          onTap: () {
-            setState(() {
-              _isCartExpanded = !_isCartExpanded;
-              _resetSplitBoardState();
-            });
-          },
+          borderRadius: BorderRadius.circular(16),
+          onTap: _toggleCartExpanded,
           child: Icon(
             _isCartExpanded ? Icons.chevron_right : Icons.chevron_left,
+            size: 20,
           ),
         ),
+      ),
+    );
+  }
+
+  void _toggleCartExpanded() {
+    final shouldExpand = !_isCartExpanded;
+    setState(() {
+      _isCartExpanded = shouldExpand;
+      _resetSplitBoardState();
+    });
+
+    if (!shouldExpand) return;
+    final cart = context.read<CartProvider>();
+    _ensureSplitBoardSeed(cart);
+  }
+
+  Widget _buildMenuCartDivider() {
+    return SizedBox(
+      width: 36,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          const VerticalDivider(width: 1, thickness: 1),
+          _buildCartExpandToggle(),
+        ],
       ),
     );
   }
@@ -812,19 +864,15 @@ class _ProductListScreenState extends State<ProductListScreen> {
   }
 
   Widget _buildSplitBoardBody() {
-    return Consumer<CartProvider>(
-      builder: (context, cart, _) {
-        _ensureSplitBoardSeed(cart);
-
-        return Column(
+    return Stack(
+      children: [
+        Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 children: [
-                  _buildCartExpandToggle(),
-                  const SizedBox(width: 8),
-                  const Text(
+                  Text(
                     'Split Bill / Group Order',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
@@ -1045,8 +1093,15 @@ class _ProductListScreenState extends State<ProductListScreen> {
               ),
             ),
           ],
-        );
-      },
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: _buildCartExpandToggle(),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1158,7 +1213,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
           orderType: _orderType,
           paymentMethod: payment.method,
           totalPaymentReceived: payment.totalPaymentReceived,
-          cashNominalBreakdown: payment.cashNominalBreakdown,
           changeAmount: payment.changeAmount,
           status: 'completed',
         );
@@ -1169,7 +1223,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
           orderType: _orderType,
           paymentMethod: payment.method,
           totalPaymentReceived: payment.totalPaymentReceived,
-          cashNominalBreakdown: payment.cashNominalBreakdown,
           changeAmount: payment.changeAmount,
           status: 'completed',
           parentOrderId: _pendingParentOrderIdForNextSubmit,
@@ -1557,7 +1610,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
       'points_earned': 0,
       'points_used': 0,
       'total_payment_received': null,
-      'cash_nominal_breakdown': null,
       'change_amount': null,
       'customer_name': customerName,
       'parent_order_id': parentOrderId,

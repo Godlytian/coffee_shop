@@ -491,33 +491,70 @@ extension CashierControllerMethods on _ProductListScreenState {
   }
 
   Future<_PaymentResult?> _showPaymentMethodModal(double totalAmount) async {
-    const cashDenominations = <int>[
-      1000,
-      2000,
-      5000,
-      10000,
-      20000,
-      50000,
-      100000,
-    ];
-
     var paymentMethod = 'cash';
-    var selectedCashCounts = <int, int>{};
+    var cashInput = '';
+
+    num parseCashInput() {
+      if (cashInput.isEmpty) return 0;
+      return num.tryParse(cashInput) ?? 0;
+    }
 
     return showDialog<_PaymentResult>(
       context: context,
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (context, setState) {
-            final cashPaid = selectedCashCounts.entries.fold<int>(
-              0,
-              (sum, entry) => sum + (entry.key * entry.value),
-            );
+            final cashPaid = parseCashInput();
             final change = cashPaid - totalAmount;
-            final selectedBreakdown = cashDenominations
-                .where((value) => (selectedCashCounts[value] ?? 0) > 0)
-                .map((value) => 'Rp $value x${selectedCashCounts[value]}')
-                .toList();
+            final normalizedTotal = totalAmount % 1 == 0
+                ? totalAmount.toInt()
+                : totalAmount;
+
+            void onCalculatorTap(String value) {
+              setState(() {
+                if (value == 'clear') {
+                  cashInput = '';
+                  return;
+                }
+
+                if (value == 'backspace') {
+                  if (cashInput.isNotEmpty) {
+                    cashInput = cashInput.substring(0, cashInput.length - 1);
+                  }
+                  return;
+                }
+
+                if (cashInput.length >= 9) return;
+                if (cashInput == '0') {
+                  cashInput = value;
+                } else {
+                  cashInput += value;
+                }
+              });
+            }
+
+            Widget calculatorButton({
+              required String label,
+              required VoidCallback onTap,
+              Color? backgroundColor,
+              Color? foregroundColor,
+            }) {
+              return SizedBox(
+                height: 52,
+                child: ElevatedButton(
+                  onPressed: onTap,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: backgroundColor,
+                    foregroundColor: foregroundColor,
+                    textStyle: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  child: Text(label),
+                ),
+              );
+            }
 
             return AlertDialog(
               title: const Text('Payment Method'),
@@ -527,11 +564,6 @@ extension CashierControllerMethods on _ProductListScreenState {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Total: ${_formatRupiah(totalAmount)}',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 12),
                     SegmentedButton<String>(
                       segments: const [
                         ButtonSegment(value: 'cash', label: Text('Cash')),
@@ -546,73 +578,118 @@ extension CashierControllerMethods on _ProductListScreenState {
                     ),
                     const SizedBox(height: 12),
                     if (paymentMethod == 'cash') ...[
-                      const Text('Pilih nominal uang:'),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: cashDenominations.map((value) {
-                          return ActionChip(
-                            label: Text(_formatRupiah(value)),
-                            onPressed: () {
-                              setState(() {
-                                selectedCashCounts = {
-                                  ...selectedCashCounts,
-                                  value: (selectedCashCounts[value] ?? 0) + 1,
-                                };
-                              });
-                            },
-                          );
-                        }).toList(),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              _formatRupiah(totalAmount),
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _formatRupiah(cashPaid),
+                              style: const TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 8),
+                              child: Divider(height: 1),
+                            ),
+                            Text(
+                              _formatRupiah(change > 0 ? change : 0),
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w600,
+                                color: change >= 0
+                                    ? Colors.green.shade700
+                                    : Colors.red.shade700,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 12),
-                      if (selectedBreakdown.isNotEmpty) ...[
-                        const Text(
-                          'Nominal terpilih (tap - untuk mengurangi):',
-                        ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: cashDenominations
-                              .where(
-                                (value) => (selectedCashCounts[value] ?? 0) > 0,
-                              )
-                              .map((value) {
-                                final count = selectedCashCounts[value] ?? 0;
-                                return InputChip(
-                                  avatar: const Icon(Icons.remove, size: 18),
-                                  label: Text('Rp $value x$count'),
-                                  onPressed: () {
-                                    setState(() {
-                                      final nextCount = count - 1;
-                                      selectedCashCounts = {
-                                        ...selectedCashCounts,
-                                      };
-                                      if (nextCount <= 0) {
-                                        selectedCashCounts.remove(value);
-                                      } else {
-                                        selectedCashCounts[value] = nextCount;
-                                      }
-                                    });
-                                  },
-                                );
-                              })
-                              .toList(),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-                      Text('Dibayar: Rp $cashPaid'),
-                      if (selectedBreakdown.isNotEmpty)
-                        Text(
-                          selectedBreakdown.join(', '),
-                          style: TextStyle(color: Colors.grey.shade700),
-                        ),
-                      Text(
-                        'Kembalian: Rp ${change > 0 ? change.toStringAsFixed(0) : '0'}',
+                      GridView.count(
+                        crossAxisCount: 3,
+                        shrinkWrap: true,
+                        mainAxisSpacing: 8,
+                        crossAxisSpacing: 8,
+                        childAspectRatio: 1.8,
+                        physics: const NeverScrollableScrollPhysics(),
+                        children: [
+                          calculatorButton(
+                            label: '1',
+                            onTap: () => onCalculatorTap('1'),
+                          ),
+                          calculatorButton(
+                            label: '2',
+                            onTap: () => onCalculatorTap('2'),
+                          ),
+                          calculatorButton(
+                            label: '3',
+                            onTap: () => onCalculatorTap('3'),
+                          ),
+                          calculatorButton(
+                            label: '4',
+                            onTap: () => onCalculatorTap('4'),
+                          ),
+                          calculatorButton(
+                            label: '5',
+                            onTap: () => onCalculatorTap('5'),
+                          ),
+                          calculatorButton(
+                            label: '6',
+                            onTap: () => onCalculatorTap('6'),
+                          ),
+                          calculatorButton(
+                            label: '7',
+                            onTap: () => onCalculatorTap('7'),
+                          ),
+                          calculatorButton(
+                            label: '8',
+                            onTap: () => onCalculatorTap('8'),
+                          ),
+                          calculatorButton(
+                            label: '9',
+                            onTap: () => onCalculatorTap('9'),
+                          ),
+                          calculatorButton(
+                            label: 'C',
+                            onTap: () => onCalculatorTap('clear'),
+                            backgroundColor: Colors.orange.shade100,
+                            foregroundColor: Colors.orange.shade800,
+                          ),
+                          calculatorButton(
+                            label: '0',
+                            onTap: () => onCalculatorTap('0'),
+                          ),
+                          calculatorButton(
+                            label: '⌫',
+                            onTap: () => onCalculatorTap('backspace'),
+                            backgroundColor: Colors.blueGrey.shade100,
+                            foregroundColor: Colors.blueGrey.shade800,
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 6),
                     ] else ...[
+                      Text(
+                        'Total: ${_formatRupiah(totalAmount)}',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 10),
                       Container(
                         width: double.infinity,
                         height: 180,
@@ -623,7 +700,7 @@ extension CashierControllerMethods on _ProductListScreenState {
                           color: Colors.grey.shade100,
                         ),
                         child: const Text(
-                          'QRIS image placeholder\n(akan diisi nanti)',
+                          'QRIS image placeholder (akan diisi nanti)',
                         ),
                       ),
                     ],
@@ -639,15 +716,6 @@ extension CashierControllerMethods on _ProductListScreenState {
                   onPressed: paymentMethod == 'cash' && cashPaid < totalAmount
                       ? null
                       : () {
-                          final normalizedTotal = totalAmount % 1 == 0
-                              ? totalAmount.toInt()
-                              : totalAmount;
-                          final cashBreakdown = paymentMethod == 'cash'
-                              ? selectedCashCounts.map(
-                                  (key, value) =>
-                                      MapEntry(key.toString(), value),
-                                )
-                              : null;
                           final totalPaymentReceived = paymentMethod == 'cash'
                               ? cashPaid
                               : normalizedTotal;
@@ -659,7 +727,6 @@ extension CashierControllerMethods on _ProductListScreenState {
                             _PaymentResult(
                               method: paymentMethod,
                               totalPaymentReceived: totalPaymentReceived,
-                              cashNominalBreakdown: cashBreakdown,
                               changeAmount: changeAmount,
                             ),
                           );
