@@ -889,6 +889,14 @@ class CartProvider extends ChangeNotifier {
         ? totalAmount.toInt()
         : totalAmount;
 
+    final existingOrders = await LocalOrderStoreRepository.instance
+        .fetchAllOrders();
+    final existingOrder = existingOrders.firstWhere(
+      (row) => ((row['id'] as num?)?.toInt() ?? -1) == orderId,
+      orElse: () => <String, dynamic>{},
+    );
+    final existingOrderSource = existingOrder['order_source']?.toString();
+
     final localOrderItems = _buildOfflineOrderItemCacheRows(orderId);
     final localOrderPayload = {
       'id': orderId,
@@ -906,7 +914,7 @@ class CartProvider extends ChangeNotifier {
       'notes': (tableName == null || tableName.isEmpty)
           ? null
           : 'Table: $tableName',
-      'order_source': 'cashier',
+      'order_source': existingOrderSource ?? 'cashier',
       'created_at': DateTime.now().toIso8601String(),
     };
 

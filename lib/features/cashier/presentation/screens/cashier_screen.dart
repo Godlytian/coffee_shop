@@ -22,6 +22,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 part '../../controllers/cashier_controller.dart';
 part '../widgets/cashier_app_bar.dart';
@@ -58,6 +59,11 @@ class _ProductListScreenState extends State<ProductListScreen> {
   final Set<String> _selectedCartItems = <String>{};
   bool _isCartSelectionMode = false;
   int? _pendingParentOrderIdForNextSubmit;
+  bool _isOnlinePaidOrderInCart = false;
+  Map<String, dynamic>? _currentOrderMetadata;
+  String _courierWhatsappNumber = '';
+  String _courierMessageTemplate =
+      'New delivery order\nOrder ID: {order_id}\nCustomer: {customer_name}\nType: {order_type}\nTotal: {order_total}\nMap: {map_link}\nItems:\n{order_items}';
   OverlayEntry? _snackbarOverlayEntry;
   AnimationController? _snackbarAnimationController;
   final CashierRepository _cashierRepository = CashierRepository();
@@ -101,6 +107,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
     _future = _loadProducts();
     LocalOrderStoreRepository.instance.init();
     OrderSyncService.instance.start();
+    unawaited(_loadCourierSettings());
     unawaited(_primeOfflineCachesOnFirstOpen());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncShiftContext();
@@ -699,31 +706,60 @@ class _ProductListScreenState extends State<ProductListScreen> {
                   const SizedBox(height: 10),
                   Row(
                     children: [
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: cart.items.isEmpty
-                              ? null
-                              : () => _handleSaveCartOrder(cart),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            foregroundColor: Colors.white,
+                      if (_isOnlinePaidOrderInCart) ...[
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed:
+                                cart.items.isEmpty || _orderType != 'delivery'
+                                ? null
+                                : () => _handleSendOrderToCourier(cart),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.teal,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: const Text('SEND TO COURIER'),
                           ),
-                          child: const Text('SAVE'),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: cart.items.isEmpty
-                              ? null
-                              : () => _handlePayCartOrder(cart),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green,
-                            foregroundColor: Colors.white,
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: cart.items.isEmpty
+                                ? null
+                                : () => _handleCompleteOnlineOrder(),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: const Text('COMPLETE'),
                           ),
-                          child: const Text('PAY'),
                         ),
-                      ),
+                      ] else ...[
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: cart.items.isEmpty
+                                ? null
+                                : () => _handleSaveCartOrder(cart),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: const Text('SAVE'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: cart.items.isEmpty
+                                ? null
+                                : () => _handlePayCartOrder(cart),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: const Text('PAY'),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ],
@@ -1265,6 +1301,92 @@ class _ProductListScreenState extends State<ProductListScreen> {
           ? 'Payment success (${payment.method})'
           : 'Offline saved. Sync later from app menu.',
     );
+  }
+
+  String _buildCourierWhatsappMessage(CartProvider cart) {
+    final itemsText = cart.items.values
+        .map((item) => '- ${item.quantity}x ${item.name}')
+        .join('\n');
+    final mapLink = _extractOrderMapLink();
+    return _courierMessageTemplate
+        .replaceAll('{order_id}', (_currentActiveOrderId ?? '-').toString())
+        .replaceAll('{customer_name}', (_customerName ?? '-').trim())
+        .replaceAll('{order_type}', _orderType)
+        .replaceAll('{order_total}', _formatRupiah(cart.totalAmount))
+        .replaceAll('{map_link}', mapLink)
+        .replaceAll('{order_items}', itemsText);
+  }
+
+  String _extractOrderMapLink() {
+    final metadata = _currentOrderMetadata;
+    final candidates = <String?>[
+      metadata?['map_link']?.toString(),
+      metadata?['maps_link']?.toString(),
+      metadata?['location_link']?.toString(),
+      metadata?['delivery_map_link']?.toString(),
+      metadata?['delivery_address_link']?.toString(),
+    ];
+    for (final raw in candidates) {
+      final value = raw?.trim() ?? '';
+      if (value.startsWith('http://') || value.startsWith('https://')) {
+        return value;
+      }
+    }
+
+    final notes = metadata?['notes']?.toString() ?? '';
+    final match = RegExp(r'https?://\S+').firstMatch(notes);
+    if (match != null) {
+      return match.group(0) ?? '-';
+    }
+
+    return '-';
+  }
+
+  Future<void> _handleSendOrderToCourier(CartProvider cart) async {
+    if (_orderType != 'delivery') {
+      _showDropdownSnackbar('Courier dispatch is only for delivery orders.');
+      return;
+    }
+    final rawNumber = _courierWhatsappNumber.trim();
+    if (rawNumber.isEmpty) {
+      _showDropdownSnackbar(
+        'Courier WhatsApp number is empty. Update it in App menu.',
+        isError: true,
+      );
+      return;
+    }
+
+    final normalizedNumber = rawNumber.replaceAll(RegExp(r'[^0-9]'), '');
+    final message = _buildCourierWhatsappMessage(cart);
+    final uri = Uri.parse(
+      'https://wa.me/$normalizedNumber?text=${Uri.encodeComponent(message)}',
+    );
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!mounted) return;
+    _showDropdownSnackbar(
+      opened ? 'Courier WhatsApp opened.' : 'Could not open WhatsApp link.',
+      isError: !opened,
+    );
+  }
+
+  Future<void> _handleCompleteOnlineOrder() async {
+    if (_currentActiveOrderId == null) {
+      _showDropdownSnackbar('No active online order selected.', isError: true);
+      return;
+    }
+
+    try {
+      await supabase
+          .from('orders')
+          .update({'status': OrderStatus.completed})
+          .eq('id', _currentActiveOrderId!);
+      if (!mounted) return;
+      _resetCurrentOrderDraft(showMessage: false);
+      _showDropdownSnackbar('Order marked as completed.');
+    } catch (error) {
+      if (!mounted) return;
+      _showDropdownSnackbar('Failed to complete order: $error', isError: true);
+    }
   }
 
   Widget _buildMenuLayoutContent(List<Product> filteredProducts) {

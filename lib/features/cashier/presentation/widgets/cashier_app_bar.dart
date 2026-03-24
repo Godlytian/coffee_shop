@@ -6,6 +6,16 @@ extension CashierAppBarMethods on _ProductListScreenState {
       'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlhc29kdG91b2lrYWV1eGt1ZWN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA0ODYxMzIsImV4cCI6MjA4NjA2MjEzMn0.iqm3zxfy-Xl2a_6GDmTj6io8vJW2B3Sr5SHq_4vjJW4';
   static const String _cachedShiftIdKey = 'cached_active_shift_id';
   static const String _cachedCashierIdKey = 'cached_active_cashier_id';
+  static const String _courierNumberKey = 'courier_whatsapp_number';
+  static const String _courierTemplateKey = 'courier_message_template';
+  static const List<String> _courierTemplateTokens = [
+    '{order_id}',
+    '{customer_name}',
+    '{order_type}',
+    '{order_total}',
+    '{map_link}',
+    '{order_items}',
+  ];
   static final OfflineShiftRepository _offlineShiftRepository =
       OfflineShiftRepository();
 
@@ -150,6 +160,10 @@ extension CashierAppBarMethods on _ProductListScreenState {
             PopupMenuItem(value: 'showorders', child: Text('Show Orders')),
             PopupMenuItem(value: 'shifts', child: Text('Shifts')),
             PopupMenuItem(value: 'sync_status', child: Text('Sync status')),
+            PopupMenuItem(
+              value: 'courier_settings',
+              child: Text('Courier message settings'),
+            ),
             PopupMenuItem(value: 'refresh_app', child: Text('Refresh')),
             PopupMenuItem(value: 'printer', child: Text('Printer settings')),
           ],
@@ -162,6 +176,8 @@ extension CashierAppBarMethods on _ProductListScreenState {
               await _showShiftsDialog();
             } else if (value == 'sync_status') {
               await _showSyncStatusScreen();
+            } else if (value == 'courier_settings') {
+              await _showCourierSettingsDialog();
             } else if (value == 'refresh_app') {
               await _refreshAppData();
             } else if (value == 'printer') {
@@ -173,6 +189,216 @@ extension CashierAppBarMethods on _ProductListScreenState {
           },
         ),
       ],
+    );
+  }
+
+  Future<void> _loadCourierSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedNumber = prefs.getString(_courierNumberKey);
+    final savedTemplate = prefs.getString(_courierTemplateKey);
+    if (!mounted) return;
+    setState(() {
+      if (savedNumber != null) {
+        _courierWhatsappNumber = savedNumber;
+      }
+      if (savedTemplate != null && savedTemplate.trim().isNotEmpty) {
+        _courierMessageTemplate = savedTemplate;
+      }
+    });
+  }
+
+  Future<void> _showCourierSettingsDialog() async {
+    final numberController = TextEditingController(
+      text: _courierWhatsappNumber,
+    );
+    final templateController = TextEditingController(
+      text: _courierMessageTemplate,
+    );
+
+    var previewTemplate = templateController.text;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Courier WhatsApp settings'),
+              content: SizedBox(
+                width: 560,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        controller: numberController,
+                        decoration: const InputDecoration(
+                          labelText: 'Courier WhatsApp number',
+                          hintText: 'e.g. 628123456789',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: templateController,
+                        maxLines: 8,
+                        onChanged: (value) {
+                          setDialogState(() {
+                            previewTemplate = value;
+                          });
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Message template',
+                          hintText:
+                              'Write message template and insert placeholders from chips below.',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Insert order/customer placeholders',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: _courierTemplateTokens
+                            .map((token) {
+                              return ActionChip(
+                                avatar: const Icon(
+                                  Icons.add_circle_outline,
+                                  size: 16,
+                                ),
+                                label: Text(token),
+                                onPressed: () {
+                                  _insertTemplateToken(
+                                    templateController,
+                                    token,
+                                  );
+                                  setDialogState(() {
+                                    previewTemplate = templateController.text;
+                                  });
+                                },
+                              );
+                            })
+                            .toList(growable: false),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Preview (placeholders rendered as chips)',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.grey.shade50,
+                        ),
+                        child: RichText(
+                          text: TextSpan(
+                            style: Theme.of(context).textTheme.bodyMedium,
+                            children: _buildTemplatePreviewSpans(
+                              previewTemplate,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (saved != true || !mounted) {
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final number = numberController.text.trim();
+    final template = templateController.text.trim();
+    await prefs.setString(_courierNumberKey, number);
+    await prefs.setString(_courierTemplateKey, template);
+
+    if (!mounted) return;
+    setState(() {
+      _courierWhatsappNumber = number;
+      _courierMessageTemplate = template.isEmpty
+          ? _courierMessageTemplate
+          : template;
+    });
+    _showDropdownSnackbar('Courier settings updated.');
+  }
+
+  List<InlineSpan> _buildTemplatePreviewSpans(String template) {
+    if (template.isEmpty) {
+      return const [TextSpan(text: '(empty template)')];
+    }
+
+    final tokenPattern = _courierTemplateTokens.map(RegExp.escape).join('|');
+    final regex = RegExp(tokenPattern);
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+
+    for (final match in regex.allMatches(template)) {
+      if (match.start > cursor) {
+        spans.add(TextSpan(text: template.substring(cursor, match.start)));
+      }
+      final token = match.group(0) ?? '';
+      spans.add(
+        WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: Chip(
+              visualDensity: VisualDensity.compact,
+              label: Text(token),
+            ),
+          ),
+        ),
+      );
+      cursor = match.end;
+    }
+
+    if (cursor < template.length) {
+      spans.add(TextSpan(text: template.substring(cursor)));
+    }
+
+    return spans;
+  }
+
+  void _insertTemplateToken(TextEditingController controller, String token) {
+    final value = controller.value;
+    final start = value.selection.start;
+    final end = value.selection.end;
+    if (start < 0 || end < 0) {
+      controller.text = '${controller.text}$token';
+      controller.selection = TextSelection.collapsed(
+        offset: controller.text.length,
+      );
+      return;
+    }
+
+    final newText = value.text.replaceRange(start, end, token);
+    controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + token.length),
     );
   }
 

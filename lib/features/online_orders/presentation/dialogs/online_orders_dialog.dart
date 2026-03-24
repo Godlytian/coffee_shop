@@ -781,6 +781,15 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                       setState(() {
                                                         _currentActiveOrderId =
                                                             orderId;
+                                                        _currentOrderMetadata =
+                                                            Map<
+                                                              String,
+                                                              dynamic
+                                                            >.from(
+                                                              selectedOrder,
+                                                            );
+                                                        _isOnlinePaidOrderInCart =
+                                                            true;
                                                         _customerName =
                                                             selectedOrder['customer_name']
                                                                 ?.toString();

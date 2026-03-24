@@ -480,6 +480,8 @@ extension CashierControllerMethods on _ProductListScreenState {
       _tableName = null;
       _orderType = 'dine_in';
       _currentActiveOrderId = null;
+      _currentOrderMetadata = null;
+      _isOnlinePaidOrderInCart = false;
       _selectedCartItems.clear();
       _isCartSelectionMode = false;
       _pendingParentOrderIdForNextSubmit = null;
@@ -540,14 +542,14 @@ extension CashierControllerMethods on _ProductListScreenState {
               Color? foregroundColor,
             }) {
               return SizedBox(
-                height: 52,
+                height: 20,
                 child: ElevatedButton(
                   onPressed: onTap,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: backgroundColor,
                     foregroundColor: foregroundColor,
                     textStyle: const TextStyle(
-                      fontSize: 18,
+                      fontSize: 10,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -559,7 +561,7 @@ extension CashierControllerMethods on _ProductListScreenState {
             return AlertDialog(
               title: const Text('Payment Method'),
               content: SizedBox(
-                width: 520,
+                width: 460,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -576,14 +578,14 @@ extension CashierControllerMethods on _ProductListScreenState {
                         });
                       },
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     if (paymentMethod == 'cash') ...[
                       Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.all(14),
+                        padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
                           color: Colors.grey.shade100,
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(6),
                           border: Border.all(color: Colors.grey.shade300),
                         ),
                         child: Column(
@@ -592,26 +594,26 @@ extension CashierControllerMethods on _ProductListScreenState {
                             Text(
                               _formatRupiah(totalAmount),
                               style: const TextStyle(
-                                fontSize: 24,
+                                fontSize: 16,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-                            const SizedBox(height: 4),
+                            const SizedBox(height: 2),
                             Text(
                               _formatRupiah(cashPaid),
                               style: const TextStyle(
-                                fontSize: 22,
+                                fontSize: 18,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                             const Padding(
-                              padding: EdgeInsets.symmetric(vertical: 8),
+                              padding: EdgeInsets.symmetric(vertical: 6),
                               child: Divider(height: 1),
                             ),
                             Text(
-                              _formatRupiah(change > 0 ? change : 0),
+                              _formatRupiah(change.clamp(0, double.infinity)),
                               style: TextStyle(
-                                fontSize: 20,
+                                fontSize: 16,
                                 fontWeight: FontWeight.w600,
                                 color: change >= 0
                                     ? Colors.green.shade700
@@ -621,13 +623,13 @@ extension CashierControllerMethods on _ProductListScreenState {
                           ],
                         ),
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 8),
                       GridView.count(
                         crossAxisCount: 3,
                         shrinkWrap: true,
-                        mainAxisSpacing: 8,
-                        crossAxisSpacing: 8,
-                        childAspectRatio: 1.8,
+                        mainAxisSpacing: 6,
+                        crossAxisSpacing: 6,
+                        childAspectRatio: 2.5,
                         physics: const NeverScrollableScrollPhysics(),
                         children: [
                           calculatorButton(
@@ -1032,8 +1034,11 @@ extension CashierControllerMethods on _ProductListScreenState {
 
     setState(() {
       _currentActiveOrderId = orderId;
+      _currentOrderMetadata = Map<String, dynamic>.from(order);
       _customerName = order['customer_name']?.toString();
       _orderType = order['type']?.toString() ?? _orderType;
+      _isOnlinePaidOrderInCart =
+          (order['order_source']?.toString().toLowerCase() ?? '') == 'online';
       final notes = order['notes']?.toString();
       _tableName = _tableNameFromNotes(notes);
       _selectedCartItems.clear();
