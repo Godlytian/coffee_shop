@@ -570,6 +570,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
   }
 
   Future<void> _showOnlinePendingOrdersDialog() async {
+    await OrderNotificationService.instance.clearUnreadNotifications();
     int? selectedOrderId;
 
     await showDialog<void>(
@@ -578,7 +579,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              title: const Text('Online Pending Orders'),
+              title: const Text('Online Orders'),
               content: SizedBox(
                 width: 900,
                 height: 560,
@@ -623,9 +624,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                             ),
                           ),
                           child: pendingOrders.isEmpty
-                              ? const Center(
-                                  child: Text('No pending online orders.'),
-                                )
+                              ? const Center(child: Text('No online orders.'))
                               : ListView.separated(
                                   itemCount: pendingOrders.length,
                                   separatorBuilder: (_, __) =>
@@ -748,7 +747,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                   ? null
                                                   : () async {
                                                       final updated =
-                                                          await _updateOrderStatusIfPending(
+                                                          await _updateOrderStatusIfPaid(
                                                             orderId,
                                                             OrderStatus.active,
                                                           );

@@ -14,6 +14,7 @@ import 'package:coffee_shop/features/cashier/providers/cart_provider.dart';
 import 'package:coffee_shop/features/cashier/data/offline_shift_repository.dart';
 import 'package:coffee_shop/features/printing/presentation/dialogs/printer_settings_dialog.dart';
 import 'package:coffee_shop/features/printing/services/thermal_printer_service.dart';
+import 'package:coffee_shop/core/services/order_notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
@@ -84,6 +85,8 @@ class _ProductListScreenState extends State<ProductListScreen> {
   int _splitQuantityDraft = 1;
   int _splitGroupCounter = 0;
   int _splitItemCounter = 0;
+  StreamSubscription<List<Map<String, dynamic>>>? _onlineOrderBadgeSubscription;
+  int _onlinePaidOrdersCount = 0;
 
   Stream<List<Map<String, dynamic>>> get _onlinePendingOrdersStream =>
       _activeShiftId == null
@@ -112,6 +115,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncShiftContext();
     });
+    _startOnlineOrderBadgeListener();
   }
 
   @override
@@ -141,9 +145,38 @@ class _ProductListScreenState extends State<ProductListScreen> {
   @override
   void dispose() {
     _cartProviderSubscription?.removeListener(_handleConnectionStateChange);
+    _onlineOrderBadgeSubscription?.cancel();
     _snackbarAnimationController?.dispose();
     _snackbarOverlayEntry?.remove();
     super.dispose();
+  }
+
+  void _startOnlineOrderBadgeListener() {
+    _onlineOrderBadgeSubscription?.cancel();
+    _onlineOrderBadgeSubscription = supabase
+        .from('orders')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false)
+        .listen(
+          (rows) {
+            final paidOnlineCount = rows
+                .where(
+                  (row) =>
+                      row['status'] == OrderStatus.paid &&
+                      row['order_source'] == 'online',
+                )
+                .length;
+            if (!mounted || paidOnlineCount == _onlinePaidOrdersCount) {
+              return;
+            }
+            setState(() {
+              _onlinePaidOrdersCount = paidOnlineCount;
+            });
+          },
+          onError: (_, __) {
+            // Keep UI functional when realtime channel is unavailable.
+          },
+        );
   }
 
   Future<List<Product>> _loadProducts() async {

@@ -61,7 +61,7 @@ extension OrderDetailDialogMethods on _ProductListScreenState {
           actions: [
             TextButton(
               onPressed: () async {
-                final updated = await _updateOrderStatusIfPending(
+                final updated = await _updateOrderStatusIfPaid(
                   orderId,
                   OrderStatus.cancelled,
                 );
@@ -79,10 +79,18 @@ extension OrderDetailDialogMethods on _ProductListScreenState {
             ),
             ElevatedButton(
               onPressed: () async {
-                final updated = await _updateOrderStatusIfPending(
-                  orderId,
-                  OrderStatus.processing,
-                );
+                final currentStatus = (order['status'] ?? '').toString();
+                late final bool updated;
+                if (currentStatus == OrderStatus.paid) {
+                  updated = await _updateOrderStatusIfPaid(
+                    orderId,
+                    OrderStatus.active,
+                  );
+                } else if (currentStatus == OrderStatus.active) {
+                  updated = true;
+                } else {
+                  updated = false;
+                }
 
                 if (!context.mounted) return;
                 if (!updated) {
@@ -206,12 +214,12 @@ extension OrderDetailDialogMethods on _ProductListScreenState {
     return items;
   }
 
-  Future<bool> _updateOrderStatusIfPending(int orderId, String status) async {
+  Future<bool> _updateOrderStatusIfPaid(int orderId, String status) async {
     final response = await supabase
         .from('orders')
         .update({'status': status})
         .eq('id', orderId)
-        .eq('status', OrderStatus.pending)
+        .eq('status', OrderStatus.paid)
         .select('id');
 
     final updatedRows = response as List<dynamic>;

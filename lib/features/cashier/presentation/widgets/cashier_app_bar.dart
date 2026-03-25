@@ -91,44 +91,38 @@ extension CashierAppBarMethods on _ProductListScreenState {
               ),
             ),
           ),
-        StreamBuilder<List<Map<String, dynamic>>>(
-          stream: _onlinePendingOrdersStream,
-          builder: (context, snapshot) {
-            final pendingOrders = snapshot.data ?? <Map<String, dynamic>>[];
-            return IconButton(
-              tooltip: 'Notification (online order)',
-              onPressed: _showOnlinePendingOrdersDialog,
-              icon: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  const Icon(Icons.notifications_active),
-                  if (pendingOrders.isNotEmpty)
-                    Positioned(
-                      right: -8,
-                      top: -8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.red,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          pendingOrders.length.toString(),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+        IconButton(
+          tooltip: 'Notification (online order)',
+          onPressed: _showOnlinePendingOrdersDialog,
+          icon: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              const Icon(Icons.notifications_active),
+              if (_onlinePaidOrdersCount > 0)
+                Positioned(
+                  right: -8,
+                  top: -8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      _onlinePaidOrdersCount.toString(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                ],
-              ),
-            );
-          },
+                  ),
+                ),
+            ],
+          ),
         ),
         Consumer<CartProvider>(
           builder: (context, cart, _) {
