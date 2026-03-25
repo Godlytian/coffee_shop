@@ -63,6 +63,52 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
 
+  String _onlineTimeLabel(dynamic value) {
+    DateTime date;
+    if (value is DateTime) {
+      date = value.toLocal();
+    } else if (value is String) {
+      date = DateTime.tryParse(value)?.toLocal() ?? DateTime.now();
+    } else {
+      date = DateTime.now();
+    }
+    final hours = date.hour.toString().padLeft(2, '0');
+    final minutes = date.minute.toString().padLeft(2, '0');
+    return '$hours:$minutes';
+  }
+
+  void _preloadOnlineOrderItemPreview(
+    int orderId,
+    void Function(VoidCallback fn) setDialogState,
+  ) {
+    if (_onlineOrderItemPreviewCache.containsKey(orderId) ||
+        _onlineOrderItemPreviewLoading.contains(orderId)) {
+      return;
+    }
+    _onlineOrderItemPreviewLoading.add(orderId);
+    unawaited(() async {
+      try {
+        final items = await _fetchOrderItems(orderId);
+        final preview = items
+            .map((item) => '${item.quantity}x ${item.product.name}')
+            .join(', ');
+        if (!mounted) return;
+        setDialogState(() {
+          _onlineOrderItemPreviewCache[orderId] = preview.isEmpty
+              ? 'No items'
+              : preview;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setDialogState(() {
+          _onlineOrderItemPreviewCache[orderId] = 'Failed to load items';
+        });
+      } finally {
+        _onlineOrderItemPreviewLoading.remove(orderId);
+      }
+    }());
+  }
+
   Future<void> _showAllOrdersDialog() async {
     String searchQuery = '';
     String selectedStatus = 'all';
@@ -570,282 +616,376 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
   }
 
   Future<void> _showOnlinePendingOrdersDialog() async {
+    _isOnlineOrdersDialogOpen = true;
     await OrderNotificationService.instance.clearUnreadNotifications();
     int? selectedOrderId;
+    final ScrollController pendingOrdersScrollController = ScrollController();
 
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Online Orders'),
-              content: SizedBox(
-                width: 900,
-                height: 560,
-                child: StreamBuilder<List<Map<String, dynamic>>>(
-                  stream: _onlinePendingOrdersStream,
-                  builder: (context, snapshot) {
-                    final pendingOrders =
-                        snapshot.data ?? <Map<String, dynamic>>[];
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              return AlertDialog(
+                title: const Text('Online Orders'),
+                content: SizedBox(
+                  width: 900,
+                  height: 560,
+                  child: StreamBuilder<List<Map<String, dynamic>>>(
+                    stream: _onlinePendingOrdersStream,
+                    builder: (context, snapshot) {
+                      final pendingOrders =
+                          snapshot.data ?? <Map<String, dynamic>>[];
 
-                    if (selectedOrderId != null &&
-                        pendingOrders.every(
-                          (order) =>
-                              (order['id'] as num?)?.toInt() != selectedOrderId,
-                        )) {
-                      selectedOrderId = null;
-                    }
-                    selectedOrderId ??= pendingOrders.isEmpty
-                        ? null
-                        : (pendingOrders.first['id'] as num?)?.toInt();
-
-                    final selectedOrder = selectedOrderId == null
-                        ? null
-                        : pendingOrders.firstWhere(
+                      if (selectedOrderId != null &&
+                          pendingOrders.every(
                             (order) =>
-                                (order['id'] as num?)?.toInt() ==
+                                (order['id'] as num?)?.toInt() !=
                                 selectedOrderId,
-                            orElse: () => <String, dynamic>{},
-                          );
+                          )) {
+                        selectedOrderId = null;
+                      }
+                      selectedOrderId ??= pendingOrders.isEmpty
+                          ? null
+                          : (pendingOrders.first['id'] as num?)?.toInt();
 
-                    if (snapshot.connectionState == ConnectionState.waiting &&
-                        pendingOrders.isEmpty) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
+                      final selectedOrder = selectedOrderId == null
+                          ? null
+                          : pendingOrders.firstWhere(
+                              (order) =>
+                                  (order['id'] as num?)?.toInt() ==
+                                  selectedOrderId,
+                              orElse: () => <String, dynamic>{},
+                            );
 
-                    return Row(
-                      children: [
-                        Container(
-                          width: 360,
-                          decoration: BoxDecoration(
-                            border: Border(
-                              right: BorderSide(color: Colors.blue.shade100),
+                      if (snapshot.connectionState == ConnectionState.waiting &&
+                          pendingOrders.isEmpty) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+
+                      return Row(
+                        children: [
+                          Container(
+                            width: 400,
+                            decoration: BoxDecoration(
+                              border: Border(
+                                right: BorderSide(color: Colors.blue.shade100),
+                              ),
                             ),
-                          ),
-                          child: pendingOrders.isEmpty
-                              ? const Center(child: Text('No online orders.'))
-                              : ListView.separated(
-                                  itemCount: pendingOrders.length,
-                                  separatorBuilder: (_, __) =>
-                                      const Divider(height: 1),
-                                  itemBuilder: (context, index) {
-                                    final order = pendingOrders[index];
-                                    final orderId = (order['id'] as num?)
-                                        ?.toInt();
-                                    final isSelected =
-                                        orderId != null &&
-                                        orderId == selectedOrderId;
-                                    final customer = order['customer_name']
-                                        ?.toString();
-                                    final total =
-                                        (order['total_price'] as num?) ??
-                                        (order['total_amount'] as num?) ??
-                                        0;
-                                    return ListTile(
-                                      selected: isSelected,
-                                      title: Text('Order #${order['id']}'),
-                                      subtitle: Text(
-                                        '${customer == null || customer.isEmpty ? 'Guest' : customer} • ${_formatRupiah(total)}',
-                                      ),
-                                      trailing: const Icon(Icons.chevron_right),
-                                      onTap: orderId == null
-                                          ? null
-                                          : () => setDialogState(
-                                              () => selectedOrderId = orderId,
+                            child: pendingOrders.isEmpty
+                                ? const Center(child: Text('No online orders.'))
+                                : ListView.separated(
+                                    key: const PageStorageKey<String>(
+                                      'online_pending_orders_list',
+                                    ),
+                                    controller: pendingOrdersScrollController,
+                                    itemCount: pendingOrders.length,
+                                    separatorBuilder: (_, __) =>
+                                        const Divider(height: 1),
+                                    itemBuilder: (context, index) {
+                                      final order = pendingOrders[index];
+                                      final orderId = (order['id'] as num?)
+                                          ?.toInt();
+                                      final isSelected =
+                                          orderId != null &&
+                                          orderId == selectedOrderId;
+                                      final isNewOrder =
+                                          orderId != null &&
+                                          _newlyPaidOnlineOrderIds.contains(
+                                            orderId,
+                                          );
+                                      final customer = order['customer_name']
+                                          ?.toString();
+                                      final total =
+                                          (order['total_price'] as num?) ??
+                                          (order['total_amount'] as num?) ??
+                                          0;
+                                      final orderTime = _onlineTimeLabel(
+                                        order['created_at'],
+                                      );
+                                      return ListTile(
+                                        selected: isSelected,
+                                        title: Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                'Order #${order['id']}',
+                                              ),
                                             ),
-                                    );
-                                  },
-                                ),
-                        ),
-                        Expanded(
-                          child: selectedOrder == null || selectedOrder.isEmpty
-                              ? const Center(
-                                  child: Text(
-                                    'Select an order to see details.',
-                                  ),
-                                )
-                              : FutureBuilder<List<_OnlineOrderItem>>(
-                                  future: _fetchOrderItems(
-                                    (selectedOrder['id'] as num).toInt(),
-                                  ),
-                                  builder: (context, detailSnapshot) {
-                                    final items =
-                                        detailSnapshot.data ??
-                                        <_OnlineOrderItem>[];
-                                    final orderId = (selectedOrder['id'] as num)
-                                        .toInt();
-                                    return Padding(
-                                      padding: const EdgeInsets.all(16),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            'Order #$orderId • ${selectedOrder['customer_name'] ?? 'Guest'}',
-                                            style: const TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 12),
-                                          Expanded(
-                                            child:
-                                                detailSnapshot
-                                                            .connectionState ==
-                                                        ConnectionState
-                                                            .waiting &&
-                                                    items.isEmpty
-                                                ? const Center(
-                                                    child:
-                                                        CircularProgressIndicator(),
-                                                  )
-                                                : items.isEmpty
-                                                ? const Center(
-                                                    child: Text(
-                                                      'No order items found.',
+                                            if (isNewOrder)
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 2,
                                                     ),
-                                                  )
-                                                : ListView.separated(
-                                                    itemCount: items.length,
-                                                    separatorBuilder: (_, __) =>
-                                                        const Divider(),
-                                                    itemBuilder: (_, index) {
-                                                      final item = items[index];
-                                                      final modifierText =
-                                                          _onlineOrderModifiersText(
-                                                            item,
-                                                          );
-                                                      return ListTile(
-                                                        title: Text(
-                                                          item.product.name,
-                                                        ),
-                                                        subtitle: Text(
-                                                          modifierText.isEmpty
-                                                              ? 'Qty: ${item.quantity}'
-                                                              : 'Qty: ${item.quantity}$modifierText',
-                                                        ),
-                                                        trailing: Text(
-                                                          _formatRupiah(
-                                                            ((item.product.price +
-                                                                        _modifierExtraFromData(
-                                                                          item.modifiersData,
-                                                                        )) *
-                                                                    item.quantity)
-                                                                .toDouble(),
-                                                          ),
-                                                        ),
-                                                      );
-                                                    },
+                                                decoration: BoxDecoration(
+                                                  color: Colors.red.shade100,
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
+                                                ),
+                                                child: Text(
+                                                  'NEW',
+                                                  style: TextStyle(
+                                                    fontWeight: FontWeight.w700,
+                                                    fontSize: 11,
+                                                    color: Colors.red.shade800,
                                                   ),
-                                          ),
-                                          const SizedBox(height: 12),
-                                          Align(
-                                            alignment: Alignment.centerRight,
-                                            child: ElevatedButton(
-                                              onPressed: items.isEmpty
-                                                  ? null
-                                                  : () async {
-                                                      final updated =
-                                                          await _updateOrderStatusIfPaid(
-                                                            orderId,
-                                                            OrderStatus.active,
-                                                          );
-                                                      if (!context.mounted)
-                                                        return;
-                                                      if (!updated) {
-                                                        _showDropdownSnackbar(
-                                                          'Order already handled from another app/session.',
-                                                          isError: true,
-                                                        );
-                                                        return;
-                                                      }
-
-                                                      final cart = context
-                                                          .read<CartProvider>();
-                                                      cart.clearCart();
-                                                      for (final item
-                                                          in items) {
-                                                        cart.addItem(
-                                                          item.product,
-                                                          quantity:
-                                                              item.quantity,
-                                                          modifiers:
-                                                              item.modifiers,
-                                                          modifiersData: item
-                                                              .modifiersData,
-                                                        );
-                                                      }
-
-                                                      setState(() {
-                                                        _currentActiveOrderId =
-                                                            orderId;
-                                                        _currentOrderMetadata =
-                                                            Map<
-                                                              String,
-                                                              dynamic
-                                                            >.from(
-                                                              selectedOrder,
-                                                            );
-                                                        _isOnlinePaidOrderInCart =
-                                                            true;
-                                                        _customerName =
-                                                            selectedOrder['customer_name']
-                                                                ?.toString();
-                                                        _orderType =
-                                                            selectedOrder['type']
-                                                                ?.toString() ??
-                                                            _orderType;
-                                                        final notes =
-                                                            selectedOrder['notes']
-                                                                ?.toString();
-                                                        _tableName =
-                                                            _tableNameFromNotes(
-                                                              notes,
-                                                            );
-                                                        _selectedCartItems
-                                                            .clear();
-                                                        _isCartSelectionMode =
-                                                            false;
-                                                        _pendingParentOrderIdForNextSubmit =
-                                                            null;
-                                                      });
-
-                                                      if (!dialogContext
-                                                          .mounted) {
-                                                        return;
-                                                      }
-                                                      Navigator.of(
-                                                        dialogContext,
-                                                      ).pop();
-                                                      _showDropdownSnackbar(
-                                                        'Order #$orderId accepted to active cart.',
-                                                      );
-                                                    },
-                                              child: const Text('Accept'),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                        subtitle: orderId == null
+                                            ? Text(
+                                                '${customer == null || customer.isEmpty ? 'Guest' : customer}\nTotal: ${_formatRupiah(total)} • $orderTime',
+                                                maxLines: 2,
+                                              )
+                                            : Builder(
+                                                builder: (context) {
+                                                  _preloadOnlineOrderItemPreview(
+                                                    orderId,
+                                                    setDialogState,
+                                                  );
+                                                  final itemText =
+                                                      _onlineOrderItemPreviewCache[orderId] ??
+                                                      'Loading items...';
+                                                  return Text(
+                                                    '${customer == null || customer.isEmpty ? 'Guest' : customer}\nTotal: ${_formatRupiah(total)} • $orderTime\n$itemText',
+                                                    maxLines: 3,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  );
+                                                },
+                                              ),
+                                        trailing: const Icon(
+                                          Icons.chevron_right,
+                                        ),
+                                        onTap: orderId == null
+                                            ? null
+                                            : () => setDialogState(() {
+                                                selectedOrderId = orderId;
+                                              }),
+                                      );
+                                    },
+                                  ),
+                          ),
+                          Expanded(
+                            child:
+                                selectedOrder == null || selectedOrder.isEmpty
+                                ? const Center(
+                                    child: Text(
+                                      'Select an order to see details.',
+                                    ),
+                                  )
+                                : FutureBuilder<List<_OnlineOrderItem>>(
+                                    future: _fetchOrderItems(
+                                      (selectedOrder['id'] as num).toInt(),
+                                    ),
+                                    builder: (context, detailSnapshot) {
+                                      final items =
+                                          detailSnapshot.data ??
+                                          <_OnlineOrderItem>[];
+                                      final orderId =
+                                          (selectedOrder['id'] as num).toInt();
+                                      final customerName =
+                                          selectedOrder['customer_name']
+                                                  ?.toString()
+                                                  .trim()
+                                                  .isNotEmpty ==
+                                              true
+                                          ? selectedOrder['customer_name']
+                                                .toString()
+                                          : 'Guest';
+                                      return Padding(
+                                        padding: const EdgeInsets.all(16),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Order #$orderId • $customerName',
+                                              style: const TextStyle(
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.bold,
+                                              ),
                                             ),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
-                                ),
-                        ),
-                      ],
-                    );
-                  },
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              'Order items',
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                color: Colors.blue.shade700,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 12),
+                                            Expanded(
+                                              child:
+                                                  detailSnapshot
+                                                              .connectionState ==
+                                                          ConnectionState
+                                                              .waiting &&
+                                                      items.isEmpty
+                                                  ? const Center(
+                                                      child:
+                                                          CircularProgressIndicator(),
+                                                    )
+                                                  : items.isEmpty
+                                                  ? const Center(
+                                                      child: Text(
+                                                        'No order items found.',
+                                                      ),
+                                                    )
+                                                  : ListView.separated(
+                                                      itemCount: items.length,
+                                                      separatorBuilder:
+                                                          (_, __) =>
+                                                              const Divider(),
+                                                      itemBuilder: (_, index) {
+                                                        final item =
+                                                            items[index];
+                                                        final modifierText =
+                                                            _onlineOrderModifiersText(
+                                                              item,
+                                                            );
+                                                        return ListTile(
+                                                          title: Text(
+                                                            item.product.name,
+                                                          ),
+                                                          subtitle: Text(
+                                                            modifierText.isEmpty
+                                                                ? 'Qty: ${item.quantity}'
+                                                                : 'Qty: ${item.quantity}$modifierText',
+                                                          ),
+                                                          trailing: Text(
+                                                            _formatRupiah(
+                                                              ((item.product.price +
+                                                                          _modifierExtraFromData(
+                                                                            item.modifiersData,
+                                                                          )) *
+                                                                      item.quantity)
+                                                                  .toDouble(),
+                                                            ),
+                                                          ),
+                                                        );
+                                                      },
+                                                    ),
+                                            ),
+                                            const SizedBox(height: 12),
+                                            Align(
+                                              alignment: Alignment.centerRight,
+                                              child: ElevatedButton(
+                                                onPressed: items.isEmpty
+                                                    ? null
+                                                    : () async {
+                                                        final updated =
+                                                            await _updateOrderStatusIfPaid(
+                                                              orderId,
+                                                              OrderStatus
+                                                                  .active,
+                                                            );
+                                                        if (!context.mounted)
+                                                          return;
+                                                        if (!updated) {
+                                                          _showDropdownSnackbar(
+                                                            'Order already handled from another app/session.',
+                                                            isError: true,
+                                                          );
+                                                          return;
+                                                        }
+
+                                                        final cart = context
+                                                            .read<
+                                                              CartProvider
+                                                            >();
+                                                        cart.clearCart();
+                                                        for (final item
+                                                            in items) {
+                                                          cart.addItem(
+                                                            item.product,
+                                                            quantity:
+                                                                item.quantity,
+                                                            modifiers:
+                                                                item.modifiers,
+                                                            modifiersData: item
+                                                                .modifiersData,
+                                                          );
+                                                        }
+
+                                                        setState(() {
+                                                          _currentActiveOrderId =
+                                                              orderId;
+                                                          _currentOrderMetadata =
+                                                              Map<
+                                                                String,
+                                                                dynamic
+                                                              >.from(
+                                                                selectedOrder,
+                                                              );
+                                                          _isOnlinePaidOrderInCart =
+                                                              true;
+                                                          _customerName =
+                                                              selectedOrder['customer_name']
+                                                                  ?.toString();
+                                                          _orderType =
+                                                              selectedOrder['type']
+                                                                  ?.toString() ??
+                                                              _orderType;
+                                                          final notes =
+                                                              selectedOrder['notes']
+                                                                  ?.toString();
+                                                          _tableName =
+                                                              _tableNameFromNotes(
+                                                                notes,
+                                                              );
+                                                          _selectedCartItems
+                                                              .clear();
+                                                          _isCartSelectionMode =
+                                                              false;
+                                                          _pendingParentOrderIdForNextSubmit =
+                                                              null;
+                                                        });
+
+                                                        if (!dialogContext
+                                                            .mounted) {
+                                                          return;
+                                                        }
+                                                        Navigator.of(
+                                                          dialogContext,
+                                                        ).pop();
+                                                        _showDropdownSnackbar(
+                                                          'Order #$orderId accepted to active cart.',
+                                                        );
+                                                      },
+                                                child: const Text('Accept'),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
                 ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Close'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Close'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      pendingOrdersScrollController.dispose();
+      _isOnlineOrdersDialogOpen = false;
+    }
   }
 }

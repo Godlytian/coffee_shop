@@ -26,9 +26,7 @@ class OrderSyncService {
                 .toList(growable: false);
             await LocalOrderStoreRepository.instance.upsertOrders(mapped);
           });
-    } catch (_) {
-      // Keep app functional in full offline mode.
-    }
+    } catch (_) {}
   }
 
   Future<void> stop() async {

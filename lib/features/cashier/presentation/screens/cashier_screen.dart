@@ -86,7 +86,14 @@ class _ProductListScreenState extends State<ProductListScreen> {
   int _splitGroupCounter = 0;
   int _splitItemCounter = 0;
   StreamSubscription<List<Map<String, dynamic>>>? _onlineOrderBadgeSubscription;
-  int _onlinePaidOrdersCount = 0;
+  final ValueNotifier<int> _onlinePaidOrdersCountNotifier = ValueNotifier<int>(
+    0,
+  );
+  bool _isOnlineOrdersDialogOpen = false;
+  Set<int> _knownPaidOnlineOrderIds = <int>{};
+  final Set<int> _newlyPaidOnlineOrderIds = <int>{};
+  final Map<int, String> _onlineOrderItemPreviewCache = <int, String>{};
+  final Set<int> _onlineOrderItemPreviewLoading = <int>{};
 
   Stream<List<Map<String, dynamic>>> get _onlinePendingOrdersStream =>
       _activeShiftId == null
@@ -146,6 +153,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
   void dispose() {
     _cartProviderSubscription?.removeListener(_handleConnectionStateChange);
     _onlineOrderBadgeSubscription?.cancel();
+    _onlinePaidOrdersCountNotifier.dispose();
     _snackbarAnimationController?.dispose();
     _snackbarOverlayEntry?.remove();
     super.dispose();
@@ -159,19 +167,37 @@ class _ProductListScreenState extends State<ProductListScreen> {
         .order('created_at', ascending: false)
         .listen(
           (rows) {
-            final paidOnlineCount = rows
-                .where(
-                  (row) =>
-                      row['status'] == OrderStatus.paid &&
-                      row['order_source'] == 'online',
-                )
-                .length;
-            if (!mounted || paidOnlineCount == _onlinePaidOrdersCount) {
+            final paidOnlineRows = rows.where(
+              (row) =>
+                  row['status'] == OrderStatus.paid &&
+                  row['order_source'] == 'online',
+            );
+            final paidOnlineOrderIds = paidOnlineRows
+                .map((row) => (row['id'] as num?)?.toInt())
+                .whereType<int>()
+                .toSet();
+            final paidOnlineCount = paidOnlineOrderIds.length;
+            if (!mounted ||
+                paidOnlineCount == _onlinePaidOrdersCountNotifier.value) {
+              _knownPaidOnlineOrderIds = paidOnlineOrderIds;
               return;
             }
-            setState(() {
-              _onlinePaidOrdersCount = paidOnlineCount;
-            });
+            final hadIncrease =
+                paidOnlineCount > _onlinePaidOrdersCountNotifier.value;
+            final newOrderIds = paidOnlineOrderIds.difference(
+              _knownPaidOnlineOrderIds,
+            );
+            _onlinePaidOrdersCountNotifier.value = paidOnlineCount;
+            _newlyPaidOnlineOrderIds.addAll(newOrderIds);
+            _knownPaidOnlineOrderIds = paidOnlineOrderIds;
+            if (hadIncrease && !_isOnlineOrdersDialogOpen) {
+              _isOnlineOrdersDialogOpen = true;
+              unawaited(() async {
+                await OrderNotificationService.instance.playAlertOnce();
+                await _showOnlinePendingOrdersDialog();
+                _isOnlineOrdersDialogOpen = false;
+              }());
+            }
           },
           onError: (_, __) {
             // Keep UI functional when realtime channel is unavailable.

@@ -19,10 +19,10 @@ extension CashierAppBarMethods on _ProductListScreenState {
   static final OfflineShiftRepository _offlineShiftRepository =
       OfflineShiftRepository();
 
-  Widget _buildConnectionBadge(CartProvider cart) {
-    final networkOk = cart.hasNetworkConnection;
-    final serverOk = cart.isServerReachable;
-
+  Widget _buildConnectionBadge({
+    required bool networkOk,
+    required bool serverOk,
+  }) {
     late final Color color;
     late final IconData icon;
     late final String text;
@@ -54,16 +54,23 @@ extension CashierAppBarMethods on _ProductListScreenState {
 
   PreferredSizeWidget _buildCashierAppBar() {
     return AppBar(
-      title: Consumer<CartProvider>(
-        builder: (context, cart, _) {
-          return Row(
-            children: [
-              const Text('Cashier Dashboard'),
-              const SizedBox(width: 8),
-              _buildConnectionBadge(cart),
-            ],
-          );
-        },
+      title: Row(
+        children: [
+          const Text('Cashier Dashboard'),
+          const SizedBox(width: 8),
+          Selector<CartProvider, ({bool networkOk, bool serverOk})>(
+            selector: (_, cart) => (
+              networkOk: cart.hasNetworkConnection,
+              serverOk: cart.isServerReachable,
+            ),
+            builder: (context, status, _) {
+              return _buildConnectionBadge(
+                networkOk: status.networkOk,
+                serverOk: status.serverOk,
+              );
+            },
+          ),
+        ],
       ),
       backgroundColor: Colors.white,
       surfaceTintColor: Colors.white,
@@ -94,34 +101,39 @@ extension CashierAppBarMethods on _ProductListScreenState {
         IconButton(
           tooltip: 'Notification (online order)',
           onPressed: _showOnlinePendingOrdersDialog,
-          icon: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              const Icon(Icons.notifications_active),
-              if (_onlinePaidOrdersCount > 0)
-                Positioned(
-                  right: -8,
-                  top: -8,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      _onlinePaidOrdersCount.toString(),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
+          icon: ValueListenableBuilder<int>(
+            valueListenable: _onlinePaidOrdersCountNotifier,
+            builder: (context, count, _) {
+              return Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  const Icon(Icons.notifications_active),
+                  if (count > 0)
+                    Positioned(
+                      right: -8,
+                      top: -8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          count.toString(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ),
-            ],
+                ],
+              );
+            },
           ),
         ),
         Consumer<CartProvider>(

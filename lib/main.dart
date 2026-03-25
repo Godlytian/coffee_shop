@@ -4,6 +4,7 @@ import 'package:coffee_shop/app.dart';
 import 'package:coffee_shop/core/services/background_sync_service.dart';
 import 'package:coffee_shop/core/services/order_notification_service.dart';
 import 'package:coffee_shop/features/cashier/providers/cart_provider.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -48,6 +49,10 @@ Future<void> _initSupabaseInBackground() async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+  ]);
   await dotenv.load(fileName: '.env');
 
   await _initSupabaseInBackground();

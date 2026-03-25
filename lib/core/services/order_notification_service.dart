@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:app_badger/app_badger.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class OrderNotificationService {
   OrderNotificationService._();
@@ -22,6 +22,8 @@ class OrderNotificationService {
   bool _initialized = false;
   int _unreadCount = 0;
 
+  DateTime? _lastAlertAt;
+
   Future<void> initialize() async {
     if (_initialized) return;
 
@@ -33,8 +35,8 @@ class OrderNotificationService {
           isSpeakerphoneOn: true,
           stayAwake: false,
           contentType: AndroidContentType.sonification,
-          usageType: AndroidUsageType.notificationEvent,
-          audioFocus: AndroidAudioFocus.none,
+          usageType: AndroidUsageType.alarm,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
         ),
         iOS: AudioContextIOS(
           category: AVAudioSessionCategory.ambient,
@@ -45,16 +47,21 @@ class OrderNotificationService {
         ),
       ),
     );
-
     await _refreshUnreadCount();
     await _applyBadge();
 
-    // 2. LISTEN FOR UPDATES ONLY
     _channel = Supabase.instance.client
         .channel('public:orders:notifications')
         .onPostgresChanges(
-          event: PostgresChangeEvent
-              .update, // Make sure this says UPDATE, not insert
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'orders',
+          callback: (payload) {
+            unawaited(_handleOrderInsert(payload));
+          },
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
           schema: 'public',
           table: 'orders',
           callback: (payload) {
@@ -75,6 +82,27 @@ class OrderNotificationService {
     }
   }
 
+  Future<void> playAlertOnce() async {
+    final now = DateTime.now();
+    if (_lastAlertAt != null &&
+        now.difference(_lastAlertAt!) < const Duration(seconds: 1)) {
+      return;
+    }
+    _lastAlertAt = now;
+    await _playAlert();
+  }
+
+  Future<void> _handleOrderInsert(PostgresChangePayload payload) async {
+    final newRow = payload.newRecord;
+    final source = newRow['order_source']?.toString().toLowerCase();
+    if (source != 'online') {
+      return;
+    }
+
+    await _refreshUnreadCount();
+    await _applyBadge();
+  }
+
   Future<void> _handleOrderUpdate(PostgresChangePayload payload) async {
     final newRow = payload.newRecord;
     final oldRow = payload.oldRecord;
@@ -91,7 +119,7 @@ class OrderNotificationService {
     final justPaid = oldStatus != 'paid' && newStatus == 'paid';
 
     if (justPaid) {
-      await _playAlert();
+      await playAlertOnce();
       await _refreshUnreadCount();
       await _applyBadge();
     }
