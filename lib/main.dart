@@ -33,7 +33,6 @@ Future<void> _signInTerminalIfNeeded() async {
 
 Future<void> _initSupabaseInBackground() async {
   try {
-    await PushNotificationService.instance.initialize();
     await Supabase.initialize(
       url: 'https://iasodtouoikaeuxkuecy.supabase.co',
       anonKey:

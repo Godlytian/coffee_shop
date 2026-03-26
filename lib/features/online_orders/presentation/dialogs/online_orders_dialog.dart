@@ -765,6 +765,9 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                             ? null
                                             : () => setDialogState(() {
                                                 selectedOrderId = orderId;
+                                                _newlyPaidOnlineOrderIds.remove(
+                                                  orderId,
+                                                );
                                               }),
                                       );
                                     },
