@@ -155,7 +155,11 @@ extension CashierControllerMethods on _ProductListScreenState {
   String _orderItemRowSignature(Map<String, dynamic> row) {
     final productId = (row['product_id'] as num?)?.toInt() ?? 0;
     final quantity = (row['quantity'] as num?)?.toInt() ?? 0;
-    final priceAtTime = (row['price_at_time'] as num?)?.toDouble() ?? 0;
+    final localProduct = row['products'] as Map<String, dynamic>?;
+    final priceAtTime =
+        (row['price_at_time'] as num?)?.toDouble() ??
+        (localProduct?['price'] as num?)?.toDouble() ??
+        0;
 
     return [
       productId,
@@ -166,11 +170,12 @@ extension CashierControllerMethods on _ProductListScreenState {
   }
 
   String _selectedCartItemSignature(CartItem item) {
+    final rawModifiers = item.modifiersData ?? item.modifiers?.toJson();
     return [
       item.id,
       item.quantity,
       item.price.toStringAsFixed(6),
-      _modifierSignature(item.modifiers?.toJson()),
+      _modifierSignature(rawModifiers),
     ].join('|');
   }
 
@@ -198,6 +203,23 @@ extension CashierControllerMethods on _ProductListScreenState {
           'discount_total': 0,
         })
         .eq('id', orderId);
+  }
+
+  Future<int> _generateOfflineDailyUniqueOrderId() async {
+    final localOrders = await LocalOrderStoreRepository.instance
+        .fetchAllOrders();
+    final localNegativeIds = localOrders
+        .map((row) => (row['id'] as num?)?.toInt())
+        .whereType<int>()
+        .where((id) => id < 0)
+        .toList(growable: false);
+    if (localNegativeIds.isEmpty) {
+      return -1;
+    }
+    final smallest = localNegativeIds.reduce(
+      (value, element) => value < element ? value : element,
+    );
+    return smallest - 1;
   }
 
   Future<int> _generateDailyUniqueOrderId() async {
@@ -389,6 +411,137 @@ extension CashierControllerMethods on _ProductListScreenState {
         tableName: _tableName,
         orderType: _orderType,
       );
+
+      if (_isOfflineMode) {
+        final sourceRows = await LocalOrderItemStoreRepository.instance
+            .fetchByOrderId(sourceOrderId);
+        if (sourceRows.isEmpty) {
+          throw Exception('Offline source order items not found.');
+        }
+
+        final selectionBuckets = <String, int>{};
+        for (final item in selectedEntries.values) {
+          final key = _selectedCartItemSignature(item);
+          selectionBuckets.update(key, (count) => count + 1, ifAbsent: () => 1);
+        }
+
+        final selectedRows = <Map<String, dynamic>>[];
+        final remainingRows = <Map<String, dynamic>>[];
+
+        for (final row in sourceRows) {
+          final key = _orderItemRowSignature(row);
+          final remainingCount = selectionBuckets[key] ?? 0;
+          if (remainingCount > 0) {
+            selectedRows.add(Map<String, dynamic>.from(row));
+            selectionBuckets[key] = remainingCount - 1;
+          } else {
+            remainingRows.add(Map<String, dynamic>.from(row));
+          }
+        }
+
+        final unmatched = selectionBuckets.values.any((count) => count > 0);
+        if (selectedRows.isEmpty || unmatched) {
+          throw Exception(
+            'Tidak menemukan item order yang dipilih untuk dipisah (offline).',
+          );
+        }
+
+        final localOrders = await LocalOrderStoreRepository.instance
+            .fetchAllOrders();
+        final sourceOrder = localOrders.firstWhere(
+          (row) => ((row['id'] as num?)?.toInt() ?? -1) == sourceOrderId,
+          orElse: () => <String, dynamic>{},
+        );
+
+        final targetOrderId = await _generateOfflineDailyUniqueOrderId();
+        final createdAt = DateTime.now().toIso8601String();
+        final sourceNotes = sourceOrder['notes']?.toString();
+        final targetOrder = <String, dynamic>{
+          'id': targetOrderId,
+          'status': OrderStatus.active,
+          'type': sourceOrder['type'] ?? _orderType,
+          'order_source': sourceOrder['order_source'] ?? 'cashier',
+          'payment_method': null,
+          'total_price': 0,
+          'subtotal': 0,
+          'discount_total': 0,
+          'points_earned': 0,
+          'points_used': 0,
+          'total_payment_received': null,
+          'change_amount': null,
+          'customer_name': sourceOrder['customer_name'],
+          'parent_order_id': sourceOrderId,
+          'cashier_id': _activeCashierId,
+          'shift_id': _activeShiftId,
+          'notes': sourceNotes,
+          'created_at': createdAt,
+        };
+
+        await LocalOrderStoreRepository.instance.upsertOrder(targetOrder);
+        await LocalOrderItemStoreRepository.instance.replaceForOrder(
+          orderId: targetOrderId,
+          rows: selectedRows
+              .map(
+                (row) =>
+                    Map<String, dynamic>.from(row)
+                      ..['order_id'] = targetOrderId,
+              )
+              .toList(growable: false),
+        );
+        await LocalOrderItemStoreRepository.instance.replaceForOrder(
+          orderId: sourceOrderId,
+          rows: remainingRows
+              .map(
+                (row) =>
+                    Map<String, dynamic>.from(row)
+                      ..['order_id'] = sourceOrderId,
+              )
+              .toList(growable: false),
+        );
+
+        await _upsertLocalOrderTotal(
+          targetOrderId,
+          status: OrderStatus.active,
+          notes: sourceNotes,
+        );
+        await _upsertLocalOrderTotal(
+          sourceOrderId,
+          status: remainingRows.isEmpty
+              ? OrderStatus.cancelled
+              : OrderStatus.active,
+          notes: remainingRows.isEmpty
+              ? _buildOrderNotes(
+                  tableName: _tableName,
+                  extraNote: 'Items split to new offline draft #$targetOrderId',
+                )
+              : sourceNotes,
+        );
+
+        cart.clearCart();
+        for (final item in selectedEntries.values) {
+          cart.addItem(
+            item,
+            quantity: item.quantity,
+            modifiers: item.modifiers,
+            modifiersData: item.modifiersData,
+          );
+        }
+
+        if (!mounted) return;
+        setState(() {
+          _currentActiveOrderId = null;
+          _pendingParentOrderIdForNextSubmit = sourceOrderId;
+          _customerName = null;
+          _tableName = null;
+          _selectedCartItems.clear();
+          _isCartSelectionMode = false;
+        });
+
+        _showDropdownSnackbar(
+          'Item dipisah ke draft baru (offline). Parent order: #$sourceOrderId',
+        );
+        return;
+      }
 
       final rows = await _fetchOrderItemRows(sourceOrderId);
       final selectedIds = _matchSelectedOrderItemIds(
@@ -744,74 +897,287 @@ extension CashierControllerMethods on _ProductListScreenState {
   }
 
   Future<void> _showActiveCashierOrdersDialog() async {
+    int? selectedOrderId;
+    final ScrollController activeOrdersScrollController = ScrollController();
+
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Switch Active Order'),
-          content: SizedBox(
-            width: 500,
-            child: StreamBuilder<List<Map<String, dynamic>>>(
-              stream: _activeOrdersStream,
-              builder: (context, snapshot) {
-                final activeOrders = snapshot.data ?? <Map<String, dynamic>>[];
-                final switchableOrders = activeOrders.where((order) {
-                  final id = int.tryParse(order['id']?.toString() ?? '');
-                  return id == null || id != _currentActiveOrderId;
-                }).toList();
-                if (snapshot.connectionState == ConnectionState.waiting &&
-                    switchableOrders.isEmpty) {
-                  return const Center(child: CircularProgressIndicator());
-                }
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Switch Active Order'),
+              content: SizedBox(
+                width: 900,
+                height: 560,
+                child: StreamBuilder<List<Map<String, dynamic>>>(
+                  stream: _activeOrdersStream,
+                  builder: (context, snapshot) {
+                    final activeOrders =
+                        snapshot.data ?? <Map<String, dynamic>>[];
+                    final switchableOrders = activeOrders
+                        .where((order) {
+                          final id = int.tryParse(
+                            order['id']?.toString() ?? '',
+                          );
+                          return id == null || id != _currentActiveOrderId;
+                        })
+                        .toList(growable: false);
 
-                if (switchableOrders.isEmpty) {
-                  return const Text('No other active orders.');
-                }
+                    if (selectedOrderId != null &&
+                        switchableOrders.every(
+                          (order) =>
+                              (order['id'] as num?)?.toInt() != selectedOrderId,
+                        )) {
+                      selectedOrderId = null;
+                    }
+                    selectedOrderId ??= switchableOrders.isEmpty
+                        ? null
+                        : (switchableOrders.first['id'] as num?)?.toInt();
 
-                return ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: switchableOrders.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final order = switchableOrders[index];
-                    final orderId = order['id'];
-                    final customerName = order['customer_name'] ?? 'Guest';
-                    final total =
-                        order['total_price'] ?? order['total_amount'] ?? 0;
-                    final source = order['order_source']?.toString() ?? '-';
-                    return ListTile(
-                      title: Text('Order #$orderId - $customerName'),
-                      subtitle: Text(
-                        'Total: ${_formatRupiah((total as num?) ?? 0)} • Source: $source',
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () async {
-                        final canContinue = await _handleDraftBeforeSwitch(
-                          dialogContext,
-                        );
-                        if (!canContinue || !context.mounted) {
-                          return;
-                        }
+                    final selectedOrder = selectedOrderId == null
+                        ? null
+                        : switchableOrders.firstWhere(
+                            (order) =>
+                                (order['id'] as num?)?.toInt() ==
+                                selectedOrderId,
+                            orElse: () => <String, dynamic>{},
+                          );
 
-                        await _switchToActiveOrder(order);
-                        if (!context.mounted) return;
-                        Navigator.of(dialogContext).pop();
-                      },
+                    if (snapshot.connectionState == ConnectionState.waiting &&
+                        switchableOrders.isEmpty) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    if (switchableOrders.isEmpty) {
+                      return const Center(
+                        child: Text('No other active orders.'),
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Container(
+                          width: 380,
+                          decoration: BoxDecoration(
+                            border: Border(
+                              right: BorderSide(color: Colors.blue.shade100),
+                            ),
+                          ),
+                          child: ListView.separated(
+                            controller: activeOrdersScrollController,
+                            itemCount: switchableOrders.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final order = switchableOrders[index];
+                              final orderId = (order['id'] as num?)?.toInt();
+                              final isSelected =
+                                  orderId != null && orderId == selectedOrderId;
+                              final customerName =
+                                  order['customer_name']
+                                          ?.toString()
+                                          .trim()
+                                          .isNotEmpty ==
+                                      true
+                                  ? order['customer_name'].toString()
+                                  : 'Guest';
+                              final total =
+                                  (order['total_price'] as num?) ??
+                                  (order['total_amount'] as num?) ??
+                                  0;
+                              final source =
+                                  order['order_source']
+                                      ?.toString()
+                                      .toUpperCase() ??
+                                  '-';
+
+                              return ListTile(
+                                selected: isSelected,
+                                title: Text('Order #${order['id']}'),
+                                subtitle: Text(
+                                  '$customerName\nTotal: ${_formatRupiah(total)} • $source',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: orderId == null
+                                    ? null
+                                    : () => setDialogState(() {
+                                        selectedOrderId = orderId;
+                                      }),
+                              );
+                            },
+                          ),
+                        ),
+                        Expanded(
+                          child: selectedOrder == null || selectedOrder.isEmpty
+                              ? const Center(
+                                  child: Text(
+                                    'Select an order to see details.',
+                                  ),
+                                )
+                              : FutureBuilder<List<_OnlineOrderItem>>(
+                                  future: _fetchOrderItems(
+                                    (selectedOrder['id'] as num).toInt(),
+                                    orderSnapshot: selectedOrder,
+                                  ),
+                                  builder: (context, detailSnapshot) {
+                                    final items =
+                                        detailSnapshot.data ??
+                                        <_OnlineOrderItem>[];
+                                    final total =
+                                        (selectedOrder['total_price']
+                                            as num?) ??
+                                        (selectedOrder['total_amount']
+                                            as num?) ??
+                                        0;
+                                    final orderNotes =
+                                        selectedOrder['notes']?.toString() ??
+                                        '';
+                                    return Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            'Order #${selectedOrder['id']} • ${selectedOrder['customer_name'] ?? 'Guest'}',
+                                            style: const TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            'Source: ${(selectedOrder['order_source'] ?? '-').toString().toUpperCase()}',
+                                            style: TextStyle(
+                                              color: Colors.blue.shade700,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Total: ${_formatRupiah(total)}',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          if (orderNotes.trim().isNotEmpty)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 8,
+                                              ),
+                                              child: Text(
+                                                'Notes: $orderNotes',
+                                                style: TextStyle(
+                                                  color: Colors.grey.shade700,
+                                                ),
+                                              ),
+                                            ),
+                                          const SizedBox(height: 12),
+                                          Expanded(
+                                            child:
+                                                detailSnapshot
+                                                            .connectionState ==
+                                                        ConnectionState
+                                                            .waiting &&
+                                                    items.isEmpty
+                                                ? const Center(
+                                                    child:
+                                                        CircularProgressIndicator(),
+                                                  )
+                                                : items.isEmpty
+                                                ? const Center(
+                                                    child: Text(
+                                                      'No order items found.',
+                                                    ),
+                                                  )
+                                                : ListView.separated(
+                                                    itemCount: items.length,
+                                                    separatorBuilder: (_, __) =>
+                                                        const Divider(),
+                                                    itemBuilder: (_, index) {
+                                                      final item = items[index];
+                                                      final itemTotal =
+                                                          ((item.product.price +
+                                                                      _modifierExtraFromData(
+                                                                        item.modifiersData,
+                                                                      )) *
+                                                                  item.quantity)
+                                                              .toDouble();
+                                                      return ListTile(
+                                                        title: Text(
+                                                          item.product.name,
+                                                        ),
+                                                        subtitle: Text(
+                                                          _onlineOrderItemSubtitle(
+                                                            item,
+                                                          ),
+                                                        ),
+                                                        trailing: Text(
+                                                          _formatRupiah(
+                                                            itemTotal,
+                                                          ),
+                                                        ),
+                                                      );
+                                                    },
+                                                  ),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.end,
+                                            children: [
+                                              OutlinedButton(
+                                                onPressed: () => Navigator.of(
+                                                  dialogContext,
+                                                ).pop(),
+                                                child: const Text('Close'),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              ElevatedButton(
+                                                onPressed: () async {
+                                                  final canContinue =
+                                                      await _handleDraftBeforeSwitch(
+                                                        dialogContext,
+                                                      );
+                                                  if (!canContinue ||
+                                                      !context.mounted) {
+                                                    return;
+                                                  }
+
+                                                  await _switchToActiveOrder(
+                                                    selectedOrder,
+                                                  );
+                                                  if (!context.mounted) return;
+                                                  Navigator.of(
+                                                    dialogContext,
+                                                  ).pop();
+                                                },
+                                                child: const Text(
+                                                  'Switch to this order',
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
                     );
                   },
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Close'),
-            ),
-          ],
+                ),
+              ),
+            );
+          },
         );
       },
     );
+    activeOrdersScrollController.dispose();
   }
 
   Future<bool> _handleDraftBeforeSwitch(BuildContext dialogContext) async {

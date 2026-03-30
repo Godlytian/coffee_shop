@@ -164,7 +164,7 @@ extension OrderDetailDialogMethods on _ProductListScreenState {
     try {
       rows = await supabase
           .from('order_items')
-          .select('quantity, product_id, modifiers, products(*)')
+          .select('quantity, product_id, modifiers, notes, products(*)')
           .eq('order_id', orderId);
       final cacheRows = (rows as List<dynamic>)
           .whereType<Map>()
@@ -206,6 +206,7 @@ extension OrderDetailDialogMethods on _ProductListScreenState {
             quantity: quantity,
             modifiers: _toCartModifiers(rawModifiers, product),
             modifiersData: _toModifiersData(rawModifiers, product),
+            note: data['notes']?.toString(),
           ),
         );
       }
@@ -215,9 +216,15 @@ extension OrderDetailDialogMethods on _ProductListScreenState {
   }
 
   Future<bool> _updateOrderStatusIfPaid(int orderId, String status) async {
+    final payload = <String, dynamic>{'status': status};
+    if (status == OrderStatus.active) {
+      payload['cashier_id'] = _activeCashierId;
+      payload['shift_id'] = _activeShiftId;
+    }
+
     final response = await supabase
         .from('orders')
-        .update({'status': status})
+        .update(payload)
         .eq('id', orderId)
         .eq('status', OrderStatus.paid)
         .select('id');
@@ -232,11 +239,13 @@ class _OnlineOrderItem {
   final int quantity;
   final CartModifiers? modifiers;
   final List<dynamic>? modifiersData;
+  final String? note;
 
   _OnlineOrderItem({
     required this.product,
     required this.quantity,
     this.modifiers,
     this.modifiersData,
+    this.note,
   });
 }

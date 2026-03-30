@@ -35,6 +35,48 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     return '';
   }
 
+  List<String> _onlineOrderItemNotes(_OnlineOrderItem item) {
+    final notes = <String>[];
+    final rowNote = item.note?.trim() ?? '';
+    if (rowNote.isNotEmpty) {
+      notes.add(rowNote);
+    }
+    final directNote = item.modifiers?.notes.trim() ?? '';
+    if (directNote.isNotEmpty) {
+      notes.add(directNote);
+    }
+
+    final data = item.modifiersData;
+    if (data != null) {
+      for (final group in data.whereType<Map<String, dynamic>>()) {
+        final note =
+            group['notes']?.toString().trim() ??
+            group['note']?.toString().trim() ??
+            '';
+        if (note.isNotEmpty) {
+          notes.add(note);
+        }
+      }
+    }
+
+    return notes.toSet().toList(growable: false);
+  }
+
+  String _onlineOrderItemSubtitle(_OnlineOrderItem item) {
+    final lines = <String>['Qty: ${item.quantity}'];
+    final modifiersText = _onlineOrderModifiersText(item);
+    final itemNotes = _onlineOrderItemNotes(item);
+
+    if (modifiersText.isNotEmpty) {
+      lines.add(modifiersText);
+    }
+    for (final note in itemNotes) {
+      lines.add('Item note: $note');
+    }
+
+    return lines.join('\n');
+  }
+
   String _onlineDateLabel(dynamic value) {
     DateTime date;
     if (value is DateTime) {
@@ -562,10 +604,6 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                           itemBuilder: (_, index) {
                                                             final item =
                                                                 items[index];
-                                                            final modifierText =
-                                                                _onlineOrderModifiersText(
-                                                                  item,
-                                                                );
                                                             final itemTotal =
                                                                 ((item.product.price +
                                                                             _modifierExtraFromData(
@@ -580,10 +618,9 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                                     .name,
                                                               ),
                                                               subtitle: Text(
-                                                                modifierText
-                                                                        .isEmpty
-                                                                    ? 'Qty: ${item.quantity}'
-                                                                    : 'Qty: ${item.quantity}\n$modifierText',
+                                                                _onlineOrderItemSubtitle(
+                                                                  item,
+                                                                ),
                                                               ),
                                                               trailing: Text(
                                                                 _formatRupiah(
@@ -800,6 +837,9 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                           ? selectedOrder['customer_name']
                                                 .toString()
                                           : 'Guest';
+                                      final orderNotes =
+                                          selectedOrder['notes']?.toString() ??
+                                          '';
                                       return Padding(
                                         padding: const EdgeInsets.all(16),
                                         child: Column(
@@ -822,6 +862,15 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                 fontWeight: FontWeight.w600,
                                               ),
                                             ),
+                                            if (orderNotes.trim().isNotEmpty)
+                                              Padding(
+                                                padding: const EdgeInsets.only(
+                                                  top: 8,
+                                                ),
+                                                child: Text(
+                                                  'Order note: $orderNotes',
+                                                ),
+                                              ),
                                             const SizedBox(height: 12),
                                             Expanded(
                                               child:
@@ -848,18 +897,14 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                       itemBuilder: (_, index) {
                                                         final item =
                                                             items[index];
-                                                        final modifierText =
-                                                            _onlineOrderModifiersText(
-                                                              item,
-                                                            );
                                                         return ListTile(
                                                           title: Text(
                                                             item.product.name,
                                                           ),
                                                           subtitle: Text(
-                                                            modifierText.isEmpty
-                                                                ? 'Qty: ${item.quantity}'
-                                                                : 'Qty: ${item.quantity}$modifierText',
+                                                            _onlineOrderItemSubtitle(
+                                                              item,
+                                                            ),
                                                           ),
                                                           trailing: Text(
                                                             _formatRupiah(
@@ -876,93 +921,105 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                     ),
                                             ),
                                             const SizedBox(height: 12),
-                                            Align(
-                                              alignment: Alignment.centerRight,
-                                              child: ElevatedButton(
-                                                onPressed: items.isEmpty
-                                                    ? null
-                                                    : () async {
-                                                        final updated =
-                                                            await _updateOrderStatusIfPaid(
-                                                              orderId,
-                                                              OrderStatus
-                                                                  .active,
+                                            Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.end,
+                                              children: [
+                                                OutlinedButton(
+                                                  onPressed: () => Navigator.of(
+                                                    dialogContext,
+                                                  ).pop(),
+                                                  child: const Text('Close'),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                ElevatedButton(
+                                                  onPressed: items.isEmpty
+                                                      ? null
+                                                      : () async {
+                                                          final updated =
+                                                              await _updateOrderStatusIfPaid(
+                                                                orderId,
+                                                                OrderStatus
+                                                                    .active,
+                                                              );
+                                                          if (!context
+                                                              .mounted) {
+                                                            return;
+                                                          }
+                                                          if (!updated) {
+                                                            _showDropdownSnackbar(
+                                                              'Order already handled from another app/session.',
+                                                              isError: true,
                                                             );
-                                                        if (!context.mounted)
-                                                          return;
-                                                        if (!updated) {
+                                                            return;
+                                                          }
+
+                                                          final cart = context
+                                                              .read<
+                                                                CartProvider
+                                                              >();
+                                                          cart.clearCart();
+                                                          for (final item
+                                                              in items) {
+                                                            cart.addItem(
+                                                              item.product,
+                                                              quantity:
+                                                                  item.quantity,
+                                                              modifiers: item
+                                                                  .modifiers,
+                                                              modifiersData: item
+                                                                  .modifiersData,
+                                                            );
+                                                          }
+
+                                                          setState(() {
+                                                            _currentActiveOrderId =
+                                                                orderId;
+                                                            _currentOrderMetadata =
+                                                                Map<
+                                                                  String,
+                                                                  dynamic
+                                                                >.from(
+                                                                  selectedOrder,
+                                                                );
+                                                            _isOnlinePaidOrderInCart =
+                                                                true;
+                                                            _customerName =
+                                                                selectedOrder['customer_name']
+                                                                    ?.toString();
+                                                            _orderType =
+                                                                selectedOrder['type']
+                                                                    ?.toString() ??
+                                                                _orderType;
+                                                            final notes =
+                                                                selectedOrder['notes']
+                                                                    ?.toString();
+                                                            _tableName =
+                                                                _tableNameFromNotes(
+                                                                  notes,
+                                                                );
+                                                            _selectedCartItems
+                                                                .clear();
+                                                            _isCartSelectionMode =
+                                                                false;
+                                                            _pendingParentOrderIdForNextSubmit =
+                                                                null;
+                                                          });
+
+                                                          if (!dialogContext
+                                                              .mounted) {
+                                                            return;
+                                                          }
+                                                          Navigator.of(
+                                                            dialogContext,
+                                                          ).pop();
                                                           _showDropdownSnackbar(
-                                                            'Order already handled from another app/session.',
-                                                            isError: true,
+                                                            'Order #$orderId accepted to active cart.',
                                                           );
-                                                          return;
-                                                        }
-
-                                                        final cart = context
-                                                            .read<
-                                                              CartProvider
-                                                            >();
-                                                        cart.clearCart();
-                                                        for (final item
-                                                            in items) {
-                                                          cart.addItem(
-                                                            item.product,
-                                                            quantity:
-                                                                item.quantity,
-                                                            modifiers:
-                                                                item.modifiers,
-                                                            modifiersData: item
-                                                                .modifiersData,
-                                                          );
-                                                        }
-
-                                                        setState(() {
-                                                          _currentActiveOrderId =
-                                                              orderId;
-                                                          _currentOrderMetadata =
-                                                              Map<
-                                                                String,
-                                                                dynamic
-                                                              >.from(
-                                                                selectedOrder,
-                                                              );
-                                                          _isOnlinePaidOrderInCart =
-                                                              true;
-                                                          _customerName =
-                                                              selectedOrder['customer_name']
-                                                                  ?.toString();
-                                                          _orderType =
-                                                              selectedOrder['type']
-                                                                  ?.toString() ??
-                                                              _orderType;
-                                                          final notes =
-                                                              selectedOrder['notes']
-                                                                  ?.toString();
-                                                          _tableName =
-                                                              _tableNameFromNotes(
-                                                                notes,
-                                                              );
-                                                          _selectedCartItems
-                                                              .clear();
-                                                          _isCartSelectionMode =
-                                                              false;
-                                                          _pendingParentOrderIdForNextSubmit =
-                                                              null;
-                                                        });
-
-                                                        if (!dialogContext
-                                                            .mounted) {
-                                                          return;
-                                                        }
-                                                        Navigator.of(
-                                                          dialogContext,
-                                                        ).pop();
-                                                        _showDropdownSnackbar(
-                                                          'Order #$orderId accepted to active cart.',
-                                                        );
-                                                      },
-                                                child: const Text('Accept'),
-                                              ),
+                                                        },
+                                                  child: const Text('Accept'),
+                                                ),
+                                              ],
                                             ),
                                           ],
                                         ),
@@ -975,12 +1032,6 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                     },
                   ),
                 ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.of(dialogContext).pop(),
-                    child: const Text('Close'),
-                  ),
-                ],
               );
             },
           );

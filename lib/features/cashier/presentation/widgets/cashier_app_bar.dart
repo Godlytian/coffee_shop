@@ -52,6 +52,35 @@ extension CashierAppBarMethods on _ProductListScreenState {
     );
   }
 
+  Future<String> _cashierDisplayName(int cashierId) async {
+    try {
+      await _offlineShiftRepository.init();
+      final cachedCashiers = await _offlineShiftRepository.getCachedCashiers();
+      final cached = cachedCashiers.firstWhere(
+        (row) => (row['id'] as num?)?.toInt() == cashierId,
+        orElse: () => <String, dynamic>{},
+      );
+      final cachedName = cached['name']?.toString().trim() ?? '';
+      if (cachedName.isNotEmpty) {
+        return cachedName;
+      }
+    } catch (_) {}
+
+    try {
+      final row = await supabase
+          .from('cashier')
+          .select('name')
+          .eq('id', cashierId)
+          .maybeSingle();
+      final name = row?['name']?.toString().trim() ?? '';
+      if (name.isNotEmpty) {
+        return name;
+      }
+    } catch (_) {}
+
+    return '#$cashierId';
+  }
+
   PreferredSizeWidget _buildCashierAppBar() {
     return AppBar(
       title: Row(
@@ -64,9 +93,12 @@ extension CashierAppBarMethods on _ProductListScreenState {
               serverOk: cart.isServerReachable,
             ),
             builder: (context, status, _) {
-              return _buildConnectionBadge(
-                networkOk: status.networkOk,
-                serverOk: status.serverOk,
+              return GestureDetector(
+                onTap: _showSyncStatusScreen,
+                child: _buildConnectionBadge(
+                  networkOk: status.networkOk,
+                  serverOk: status.serverOk,
+                ),
               );
             },
           ),
@@ -79,9 +111,19 @@ extension CashierAppBarMethods on _ProductListScreenState {
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Center(
-              child: Chip(
+              child: ActionChip(
                 avatar: const Icon(Icons.person, size: 18),
-                label: Text('Cashier #$_activeCashierId'),
+                onPressed: _showShiftsDialog,
+                label: FutureBuilder<String>(
+                  future: _cashierDisplayName(_activeCashierId!),
+                  builder: (context, snapshot) {
+                    final cashierName = snapshot.data?.trim();
+                    final label = cashierName != null && cashierName.isNotEmpty
+                        ? 'Cashier: $cashierName'
+                        : 'Cashier #$_activeCashierId';
+                    return Text(label);
+                  },
+                ),
               ),
             ),
           ),
