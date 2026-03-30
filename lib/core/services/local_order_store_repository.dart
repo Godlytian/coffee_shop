@@ -111,12 +111,6 @@ class LocalOrderStoreRepository {
         final id = (order['id'] as num?)?.toInt();
         if (id == null) continue;
 
-        // 🔥 THE FIREWALL (Batch): Destroy soft-deleted orders, skip saving them.
-        if (order.containsKey('deleted_at') && order['deleted_at'] != null) {
-          await txn.delete(_table, where: 'id = ?', whereArgs: [id]);
-          continue;
-        }
-
         final resolvedSyncStatus =
             order['sync_status']?.toString() ?? syncStatus;
         final payload = Map<String, dynamic>.from(order)

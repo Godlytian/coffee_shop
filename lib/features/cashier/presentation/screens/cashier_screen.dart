@@ -228,35 +228,40 @@ class _ProductListScreenState extends State<ProductListScreen> {
           .map((item) => Product.fromJson(Map<String, dynamic>.from(item)))
           .toList(growable: false);
       await _productCatalogRepository.saveProducts(products);
-    } catch (_) {
-      // Keep running in offline-first mode.
-    }
+    } catch (_) {}
 
     try {
       final ordersData = await supabase
           .from('orders')
           .select()
+          .isFilter('deleted_at', null)
           .order('created_at', ascending: false);
+
       final orders = (ordersData as List<dynamic>)
           .whereType<Map>()
           .map((item) => Map<String, dynamic>.from(item))
           .toList(growable: false);
-      await LocalOrderStoreRepository.instance.upsertOrders(orders);
-    } catch (_) {
-      // Keep running in offline-first mode.
+
+      await LocalOrderStoreRepository.instance.reconcileOrders(orders);
+    } catch (e) {
+      print('Error priming orders: $e');
     }
 
     try {
       final orderItemsData = await supabase
           .from('order_items')
-          .select('order_id, quantity, product_id, modifiers, products(*)');
+          .select(
+            'order_id, quantity, product_id, modifiers, products(*), orders!inner(deleted_at)',
+          )
+          .isFilter('orders.deleted_at', null);
+
       final rows = (orderItemsData as List<dynamic>)
           .whereType<Map>()
           .map((item) => Map<String, dynamic>.from(item))
           .toList(growable: false);
       await LocalOrderItemStoreRepository.instance.replaceAll(rows);
-    } catch (_) {
-      // Keep running in offline-first mode.
+    } catch (e) {
+      print('Error priming order items: $e');
     }
 
     try {

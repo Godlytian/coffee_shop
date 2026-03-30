@@ -17,8 +17,6 @@ class OrderSyncService {
     await LocalOrderStoreRepository.instance.init();
 
     try {
-      // 1. Initial Fetch (Fixed Syntax)
-      // Use .is_() which is the strict Supabase Flutter standard for IS NULL
       final initialData = await supabase
           .from('orders')
           .select()
@@ -29,15 +27,10 @@ class OrderSyncService {
           .map((row) => Map<String, dynamic>.from(row))
           .toList(growable: false);
 
-      // PHASE 3 TRIGGER: Reconcile instead of just upserting!
-      // This guarantees the local cache perfectly mirrors the cloud on startup.
       await LocalOrderStoreRepository.instance.reconcileOrders(mappedInitial);
 
-      // 2. Subscribe to discrete Postgres changes...
-      // [Keep your existing Realtime code here]
-
-      // 2. Subscribe to discrete Postgres changes for active sync (Phase 2)
       _channel = supabase.channel('public:orders');
+
       _channel!
           .onPostgresChanges(
             event: PostgresChangeEvent.all,
@@ -45,32 +38,19 @@ class OrderSyncService {
             table: 'orders',
             callback: (payload) async {
               final eventType = payload.eventType;
+              final record = (eventType == PostgresChangeEvent.delete)
+                  ? payload.oldRecord
+                  : payload.newRecord;
 
-              if (eventType == PostgresChangeEvent.insert ||
-                  eventType == PostgresChangeEvent.update) {
-                final newRecord = payload.newRecord;
+              final id = record['id'];
+              if (id == null) return;
 
-                // Phase 1 Cache Logic: If updated with a deleted_at timestamp, remove locally
-                if (newRecord.containsKey('deleted_at') &&
-                    newRecord['deleted_at'] != null) {
-                  await LocalOrderStoreRepository.instance.deleteOrder(
-                    newRecord['id'],
-                  );
-                } else {
-                  // Otherwise, update or insert the order into the local cache
-                  await LocalOrderStoreRepository.instance.upsertOrder(
-                    newRecord,
-                  );
-                }
-              }
-              // Phase 2 Cache Logic: Catch accidental hard deletes directly
-              else if (eventType == PostgresChangeEvent.delete) {
-                final oldRecord = payload.oldRecord;
-                if (oldRecord.containsKey('id')) {
-                  await LocalOrderStoreRepository.instance.deleteOrder(
-                    oldRecord['id'],
-                  );
-                }
+              if (eventType == PostgresChangeEvent.delete ||
+                  (record.containsKey('deleted_at') &&
+                      record['deleted_at'] != null)) {
+                await LocalOrderStoreRepository.instance.deleteOrder(id);
+              } else {
+                await LocalOrderStoreRepository.instance.upsertOrder(record);
               }
             },
           )
