@@ -78,6 +78,12 @@ class LocalOrderStoreRepository {
     final id = (order['id'] as num?)?.toInt();
     if (id == null) return;
 
+    // 🔥 THE FIREWALL: If this order is soft-deleted, destroy it locally and abort the save.
+    if (order.containsKey('deleted_at') && order['deleted_at'] != null) {
+      await deleteOrder(id);
+      return;
+    }
+
     final resolvedSyncStatus = order['sync_status']?.toString() ?? syncStatus;
     final payload = Map<String, dynamic>.from(order)
       ..['sync_status'] = resolvedSyncStatus;
@@ -104,10 +110,18 @@ class LocalOrderStoreRepository {
       for (final order in orders) {
         final id = (order['id'] as num?)?.toInt();
         if (id == null) continue;
+
+        // 🔥 THE FIREWALL (Batch): Destroy soft-deleted orders, skip saving them.
+        if (order.containsKey('deleted_at') && order['deleted_at'] != null) {
+          await txn.delete(_table, where: 'id = ?', whereArgs: [id]);
+          continue;
+        }
+
         final resolvedSyncStatus =
             order['sync_status']?.toString() ?? syncStatus;
         final payload = Map<String, dynamic>.from(order)
           ..['sync_status'] = resolvedSyncStatus;
+
         await txn.insert(_table, {
           'id': id,
           'status': payload['status']?.toString(),
@@ -119,6 +133,50 @@ class LocalOrderStoreRepository {
         }, conflictAlgorithm: ConflictAlgorithm.replace);
       }
     });
+    await _emitAll();
+  }
+
+  Future<void> deleteOrder(int orderId) async {
+    await init();
+    await _database.delete(_table, where: 'id = ?', whereArgs: [orderId]);
+    await _emitAll();
+  }
+
+  // Phase 3: Aggressive Reconciliation (Protected)
+  Future<void> reconcileOrders(
+    List<Map<String, dynamic>> activeRemoteOrders,
+  ) async {
+    await init();
+
+    // 1. Extract IDs from the fresh remote payload as strong Integers
+    final remoteIds = activeRemoteOrders
+        .map((o) => (o['id'] as num).toInt())
+        .toSet();
+
+    // 2. Fetch all current local order IDs
+    final localRows = await _database.query(_table, columns: ['id']);
+    final localIds = localRows.map((row) => (row['id'] as num).toInt()).toSet();
+
+    final ghostIds = localIds
+        .difference(remoteIds)
+        .where((id) => id > 0)
+        .toSet();
+
+    // 4. Delete only the confirmed ghosts
+    if (ghostIds.isNotEmpty) {
+      final batch = _database.batch();
+      for (final id in ghostIds) {
+        batch.delete(_table, where: 'id = ?', whereArgs: [id]);
+      }
+      await batch.commit();
+      print(
+        'Reconciled & Deleted Ghost Orders: $ghostIds',
+      ); // Helpful for debugging
+    }
+
+    // 5. Safely upsert the fresh active orders
+    await upsertOrders(activeRemoteOrders);
+
     await _emitAll();
   }
 
@@ -248,7 +306,11 @@ class LocalOrderStoreRepository {
   Stream<List<Map<String, dynamic>>> watchActiveOrders() {
     return watchAllOrders().map(
       (rows) => rows
-          .where((row) => row['status']?.toString() == 'active')
+          .where(
+            (row) =>
+                row['status']?.toString() == 'active' &&
+                row['deleted_at'] == null,
+          )
           .toList(growable: false),
     );
   }

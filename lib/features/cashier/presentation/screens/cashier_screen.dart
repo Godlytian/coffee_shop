@@ -700,7 +700,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
                               ),
                             ),
                           Text(
-                            'Rp ${((item.price + _modifierExtraFromData(item.modifiersData)) * item.quantity).toStringAsFixed(2)}',
+                            '${CurrencyFormatters.formatRupiah((item.price + _modifierExtraFromData(item.modifiersData)) * item.quantity)}',
                           ),
                         ],
                       ),
@@ -754,7 +754,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
                         ),
                       ),
                       Text(
-                        'Rp ${cart.totalAmount.toStringAsFixed(0)}',
+                        '${CurrencyFormatters.formatRupiah(cart.totalAmount)}',
                         style: const TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
@@ -1653,7 +1653,9 @@ class _ProductListScreenState extends State<ProductListScreen> {
                 final total = order['total_price'] ?? 0;
                 return ListTile(
                   title: Text('Order #$orderId - $customerName'),
-                  subtitle: Text('Total: Rp $total'),
+                  subtitle: Text(
+                    'Total: ${CurrencyFormatters.formatRupiah(total)}',
+                  ),
                   onTap: () => Navigator.of(dialogContext).pop(order),
                 );
               },

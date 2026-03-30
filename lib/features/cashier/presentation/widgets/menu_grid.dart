@@ -35,17 +35,6 @@ extension MenuGridMethods on _ProductListScreenState {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              Center(
-                child: Text(
-                  _formatRupiah(product.price),
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.2),
-                    fontSize: 28,
-                    fontWeight: FontWeight.w800,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
               Container(
                 alignment: Alignment.center,
                 padding: const EdgeInsets.symmetric(horizontal: 8),

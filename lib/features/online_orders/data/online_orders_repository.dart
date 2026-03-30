@@ -7,8 +7,9 @@ class OnlineOrdersRepository {
     ) => rows
         .where(
           (row) =>
-              row['status'] == OrderStatus.paid &&
-              row['order_source'] == 'online',
+              row['status'] == 'paid' &&
+              row['order_source'] == 'online' &&
+              row['deleted_at'] == null,
         )
         .toList(growable: false);
 

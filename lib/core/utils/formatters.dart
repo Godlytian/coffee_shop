@@ -13,6 +13,6 @@ class CurrencyFormatters {
       }
     }
 
-    return '${isNegative ? '-' : ''}Rp${buffer.toString()}';
+    return '${isNegative ? '-' : ''}Rp ${buffer.toString()}';
   }
 }
