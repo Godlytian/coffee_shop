@@ -578,6 +578,19 @@ extension CashierAppBarMethods on _ProductListScreenState {
                 children: [
                   ElevatedButton.icon(
                     onPressed: openShiftId == null
+                        ? null
+                        : () async {
+                            Navigator.of(dialogContext).pop();
+                            await _showChangeCurrentCashierDialog(
+                              shiftId: openShiftId,
+                              currentCashierId: currentCashierId,
+                            );
+                          },
+                    icon: const Icon(Icons.swap_horiz),
+                    label: const Text('Change Cashier'),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: openShiftId == null
                         ? () async {
                             Navigator.of(dialogContext).pop();
                             await _showOpenShiftDialog(force: true);
@@ -616,6 +629,142 @@ extension CashierAppBarMethods on _ProductListScreenState {
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _showChangeCurrentCashierDialog({
+    required int shiftId,
+    int? currentCashierId,
+  }) async {
+    var cashiers = <Map<String, dynamic>>[];
+    try {
+      final rows = await supabase.from('cashier').select('id, name, code');
+      cashiers = _normalizeCashierRows(rows)
+        ..sort(
+          (a, b) => (a['name'] ?? '').toString().toLowerCase().compareTo(
+            (b['name'] ?? '').toString().toLowerCase(),
+          ),
+        );
+      await _offlineShiftRepository.init();
+      await _offlineShiftRepository.cacheCashiers(cashiers);
+    } catch (_) {
+      await _offlineShiftRepository.init();
+      cashiers = await _offlineShiftRepository.getCachedCashiers();
+    }
+
+    if (!mounted) return;
+    if (cashiers.isEmpty) {
+      _showDropdownSnackbar('No cashier found.', isError: true);
+      return;
+    }
+
+    int? selectedCashierId = currentCashierId;
+    var pin = '';
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> submitChange() async {
+              final cashierId = selectedCashierId;
+              if (cashierId == null) {
+                _showDropdownSnackbar('Select cashier first.', isError: true);
+                return;
+              }
+              if (pin.length != 4) {
+                _showDropdownSnackbar('PIN must be 4 digits.', isError: true);
+                return;
+              }
+
+              final selectedCashier = cashiers.firstWhere(
+                (row) => _asInt(row['id']) == cashierId,
+                orElse: () => <String, dynamic>{},
+              );
+              final onlineValidPin =
+                  (selectedCashier['code'] ?? '').toString() == pin;
+              final offlineValidPin = await _offlineShiftRepository
+                  .validateCashierPin(cashierId: cashierId, pin: pin);
+              if (!onlineValidPin && !offlineValidPin) {
+                _showDropdownSnackbar('Invalid PIN.', isError: true);
+                return;
+              }
+
+              try {
+                await supabase
+                    .from('shifts')
+                    .update({'current_cashier_id': cashierId})
+                    .eq('id', shiftId);
+                if (!mounted) return;
+                setState(() {
+                  _activeCashierId = cashierId;
+                });
+                await _cacheActiveShiftLocally(
+                  shiftId: _activeShiftId,
+                  cashierId: cashierId,
+                );
+                if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+                _showDropdownSnackbar('Current cashier updated.');
+              } catch (error) {
+                _showDropdownSnackbar(
+                  'Failed to change cashier: $error',
+                  isError: true,
+                );
+              }
+            }
+
+            return AlertDialog(
+              title: const Text('Change Current Cashier'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    DropdownButtonFormField<int>(
+                      value: selectedCashierId,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Cashier'),
+                      items: cashiers
+                          .map(
+                            (cashier) => DropdownMenuItem<int>(
+                              value: _asInt(cashier['id']),
+                              child: Text(
+                                (cashier['name'] ?? 'Unknown').toString(),
+                              ),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: (value) =>
+                          setDialogState(() => selectedCashierId = value),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      decoration: const InputDecoration(
+                        labelText: 'Cashier PIN',
+                        helperText: 'Enter selected cashier PIN',
+                      ),
+                      keyboardType: TextInputType.number,
+                      obscureText: true,
+                      maxLength: 4,
+                      onChanged: (value) => pin = value.trim(),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: submitChange,
+                  child: const Text('Update'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -740,7 +889,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
                       'branch_id': branchId,
                       'status': 'open',
                       'current_cashier_id': cashierId,
-                      'opened_by': supabase.auth.currentUser?.id,
+                      'opened_by': cashierId,
                     })
                     .select('id, current_cashier_id')
                     .single();
@@ -821,7 +970,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
                       'cashier_id': cashierId,
                       'branch_id': branchId,
                       'started_at': DateTime.now().toIso8601String(),
-                      'opened_by': supabase.auth.currentUser?.id,
+                      'opened_by': cashierId,
                     },
                   },
                 );
@@ -1090,7 +1239,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
           .update({
             'status': 'closed',
             'ended_at': DateTime.now().toIso8601String(),
-            'closed_by': supabase.auth.currentUser?.id,
+            'closed_by': _activeCashierId,
           })
           .eq('id', shiftId);
 
@@ -1111,7 +1260,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
             'shift_id': shiftId,
             'cashier_id': _activeCashierId,
             'ended_at': DateTime.now().toIso8601String(),
-            'closed_by': supabase.auth.currentUser?.id,
+            'closed_by': _activeCashierId,
           },
         },
       );

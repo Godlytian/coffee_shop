@@ -963,6 +963,17 @@ class _ProductListScreenState extends State<ProductListScreen> {
     );
   }
 
+  Future<void> _handlePaySplitGroup(_SplitGroup group) async {
+    if (group.items.isEmpty) return;
+    final total = _groupSubtotal(group).toDouble();
+    final payment = await _showPaymentMethodModal(total);
+    if (!mounted || payment == null) return;
+
+    _showDropdownSnackbar(
+      '${group.groupName} paid via ${payment.method.toUpperCase()} • ${_formatRupiah(total)}',
+    );
+  }
+
   Widget _buildSplitBoardBody() {
     return Stack(
       children: [
@@ -1117,11 +1128,25 @@ class _ProductListScreenState extends State<ProductListScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    group.groupName,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                    ),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          group.groupName,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                      IconButton(
+                                        tooltip:
+                                            'Pay & print ${group.groupName}',
+                                        onPressed: group.items.isEmpty
+                                            ? null
+                                            : () => _handlePaySplitGroup(group),
+                                        icon: const Icon(Icons.print),
+                                      ),
+                                    ],
                                   ),
                                   const SizedBox(height: 8),
                                   Expanded(
@@ -1149,9 +1174,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
                                     child: ElevatedButton(
                                       onPressed: group.items.isEmpty
                                           ? null
-                                          : () => _showDropdownSnackbar(
-                                              'Pay ${group.groupName}: ${_formatRupiah(_groupSubtotal(group))}',
-                                            ),
+                                          : () => _handlePaySplitGroup(group),
                                       child: Text(
                                         'Pay ${_formatRupiah(_groupSubtotal(group))}',
                                       ),

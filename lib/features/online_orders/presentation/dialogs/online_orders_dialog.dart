@@ -119,6 +119,202 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     return '$hours:$minutes';
   }
 
+  String _shiftDateTimeRangeLabel(dynamic startedAt, dynamic endedAt) {
+    final started = startedAt is String
+        ? DateTime.tryParse(startedAt)?.toLocal()
+        : startedAt is DateTime
+        ? startedAt.toLocal()
+        : null;
+    final ended = endedAt is String
+        ? DateTime.tryParse(endedAt)?.toLocal()
+        : endedAt is DateTime
+        ? endedAt.toLocal()
+        : null;
+
+    if (started == null) return '-';
+    final startDate = _onlineDateLabel(started);
+    final startTime = _onlineTimeLabel(started);
+    final endTime = ended == null ? 'OPEN' : _onlineTimeLabel(ended);
+    return '$startDate • $startTime - $endTime';
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchShiftRowsForReport() async {
+    try {
+      final shifts = await supabase
+          .from('shifts')
+          .select(
+            'id, branch_id, started_at, ended_at, opened_by, closed_by, current_cashier_id',
+          )
+          .order('started_at', ascending: false);
+      return (shifts as List<dynamic>).whereType<Map<String, dynamic>>().toList(
+        growable: false,
+      );
+    } catch (_) {
+      final localOrders = await LocalOrderStoreRepository.instance
+          .fetchAllOrders();
+      final grouped = <int, List<Map<String, dynamic>>>{};
+      for (final order in localOrders) {
+        final shiftId = _toInt(order['shift_id']);
+        if (shiftId == null) continue;
+        grouped.putIfAbsent(shiftId, () => <Map<String, dynamic>>[]).add(order);
+      }
+
+      final rows =
+          grouped.entries
+              .map((entry) {
+                final orders = List<Map<String, dynamic>>.from(entry.value)
+                  ..sort((a, b) {
+                    final aTime = DateTime.tryParse(
+                      (a['created_at'] ?? '').toString(),
+                    );
+                    final bTime = DateTime.tryParse(
+                      (b['created_at'] ?? '').toString(),
+                    );
+                    if (aTime == null && bTime == null) return 0;
+                    if (aTime == null) return 1;
+                    if (bTime == null) return -1;
+                    return bTime.compareTo(aTime);
+                  });
+                final latest = orders.isEmpty
+                    ? <String, dynamic>{}
+                    : orders.first;
+                final oldest = orders.isEmpty
+                    ? <String, dynamic>{}
+                    : orders.last;
+                final cashierId =
+                    _toInt(latest['cashier_id']) ?? _activeCashierId;
+
+                return <String, dynamic>{
+                  'id': entry.key,
+                  'branch_id': latest['branch_id'],
+                  'started_at': oldest['created_at'],
+                  'ended_at': latest['created_at'],
+                  'opened_by': cashierId,
+                  'closed_by': cashierId,
+                  'current_cashier_id': cashierId,
+                };
+              })
+              .toList(growable: false)
+            ..sort((a, b) {
+              final aTime = DateTime.tryParse(
+                (a['started_at'] ?? '').toString(),
+              );
+              final bTime = DateTime.tryParse(
+                (b['started_at'] ?? '').toString(),
+              );
+              if (aTime == null && bTime == null) return 0;
+              if (aTime == null) return 1;
+              if (bTime == null) return -1;
+              return bTime.compareTo(aTime);
+            });
+
+      if (_activeShiftId != null &&
+          rows.every((row) => _toInt(row['id']) != _activeShiftId)) {
+        rows.insert(0, <String, dynamic>{
+          'id': _activeShiftId,
+          'branch_id': '-',
+          'started_at': DateTime.now().toIso8601String(),
+          'ended_at': null,
+          'opened_by': _activeCashierId,
+          'closed_by': null,
+          'current_cashier_id': _activeCashierId,
+        });
+      }
+      return rows;
+    }
+  }
+
+  int? _toInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value);
+    return null;
+  }
+
+  Future<Map<int, String>> _fetchCashierNamesByIds(Set<int> ids) async {
+    if (ids.isEmpty) return <int, String>{};
+    try {
+      final rows = await supabase
+          .from('cashier')
+          .select('id, name')
+          .inFilter('id', ids.toList());
+      final map = <int, String>{};
+      for (final row
+          in (rows as List<dynamic>).whereType<Map<String, dynamic>>()) {
+        final id = _toInt(row['id']);
+        final name = row['name']?.toString().trim();
+        if (id != null && name != null && name.isNotEmpty) {
+          map[id] = name;
+        }
+      }
+      return map;
+    } catch (_) {
+      try {
+        final offlineRepo = OfflineShiftRepository();
+        await offlineRepo.init();
+        final cached = await offlineRepo.getCachedCashiers();
+        final map = <int, String>{};
+        for (final row in cached) {
+          final id = _toInt(row['id']);
+          final name = row['name']?.toString().trim();
+          if (id != null &&
+              ids.contains(id) &&
+              name != null &&
+              name.isNotEmpty) {
+            map[id] = name;
+          }
+        }
+        return map;
+      } catch (_) {
+        return <int, String>{};
+      }
+    }
+  }
+
+  Future<void> _printShiftReport({
+    required Map<String, dynamic> shift,
+    required List<Map<String, dynamic>> orders,
+  }) async {
+    final shiftId = (shift['id'] as num?)?.toInt() ?? 0;
+    final shiftTotal = orders.fold<num>(
+      0,
+      (sum, order) =>
+          sum +
+          ((order['total_price'] as num?) ??
+              (order['total_amount'] as num?) ??
+              0),
+    );
+    final lines = orders
+        .map((order) {
+          final total =
+              (order['total_price'] as num?) ??
+              (order['total_amount'] as num?) ??
+              0;
+          return <String, dynamic>{
+            'name':
+                'Order #${order['id']} ${(order['status'] ?? '-').toString().toUpperCase()}',
+            'qty': 1,
+            'subtotal': total,
+          };
+        })
+        .toList(growable: false);
+
+    await ThermalPrinterService.instance.printPaymentReceipt(
+      orderId: shiftId == 0 ? -1 : shiftId,
+      lines: lines,
+      total: shiftTotal,
+      paymentMethod: 'shift',
+      paid: shiftTotal,
+      change: 0,
+      customerName:
+          'Shift #${shift['id'] ?? '-'} • Cashier ${shift['current_cashier_id'] ?? '-'}',
+      tableName: _shiftDateTimeRangeLabel(
+        shift['started_at'],
+        shift['ended_at'],
+      ),
+    );
+  }
+
   void _preloadOnlineOrderItemPreview(
     int orderId,
     void Function(VoidCallback fn) setDialogState,
@@ -154,11 +350,14 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
   Future<void> _showAllOrdersDialog() async {
     String searchQuery = '';
     String selectedStatus = 'all';
+    String selectedTab = 'orders';
     int? selectedOrderId;
+    int? selectedShiftId;
 
     final offlinePending = await context
         .read<CartProvider>()
         .getPendingOfflineOrders();
+    final shiftRowsFuture = _fetchShiftRowsForReport();
 
     await showDialog<void>(
       context: context,
@@ -307,6 +506,480 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                           .add(order);
                     }
 
+                    Widget ordersTab() {
+                      return Row(
+                        children: [
+                          Container(
+                            width: 430,
+                            decoration: BoxDecoration(
+                              border: Border(
+                                right: BorderSide(color: Colors.blue.shade100),
+                              ),
+                              color: Colors.white,
+                            ),
+                            child: filtered.isEmpty
+                                ? const Center(child: Text('No orders found.'))
+                                : ListView(
+                                    padding: const EdgeInsets.all(12),
+                                    children: grouped.entries.expand((entry) {
+                                      final header = Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 8,
+                                        ),
+                                        child: Text(
+                                          '${entry.key}:',
+                                          style: TextStyle(
+                                            color: Colors.blue.shade700,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      );
+
+                                      final tiles = entry.value.map((order) {
+                                        final orderId = order['id'];
+                                        final customer =
+                                            order['customer_name']
+                                                    ?.toString()
+                                                    .trim()
+                                                    .isNotEmpty ==
+                                                true
+                                            ? order['customer_name']
+                                            : 'Guest';
+                                        final status = (order['status'] ?? '-')
+                                            .toString();
+                                        final source =
+                                            (order['order_source'] ?? '-')
+                                                .toString();
+                                        final total =
+                                            (order['total_price'] as num?) ??
+                                            (order['total_amount'] as num?) ??
+                                            0;
+                                        final isSelected =
+                                            (order['id'] as num?)?.toInt() ==
+                                            selectedOrderId;
+                                        return Card(
+                                          elevation: 0,
+                                          margin: const EdgeInsets.symmetric(
+                                            vertical: 4,
+                                          ),
+                                          color: isSelected
+                                              ? Colors.blue.withOpacity(0.08)
+                                              : null,
+                                          child: ListTile(
+                                            onTap: () => setDialogState(() {
+                                              selectedOrderId =
+                                                  (order['id'] as num?)
+                                                      ?.toInt();
+                                            }),
+                                            title: Text(
+                                              'Order #$orderId • $customer',
+                                            ),
+                                            subtitle: Text(
+                                              '${status.toUpperCase()} • ${source.toUpperCase()} • ${_formatRupiah(total)}',
+                                            ),
+                                            trailing: const Icon(
+                                              Icons.chevron_right,
+                                            ),
+                                          ),
+                                        );
+                                      }).toList();
+
+                                      return [header, ...tiles];
+                                    }).toList(),
+                                  ),
+                          ),
+                          Expanded(
+                            child:
+                                selectedOrder == null || selectedOrder.isEmpty
+                                ? const Center(
+                                    child: Text(
+                                      'Select an order to see details.',
+                                    ),
+                                  )
+                                : FutureBuilder<List<_OnlineOrderItem>>(
+                                    future: _fetchOrderItems(
+                                      (selectedOrder['id'] as num).toInt(),
+                                    ),
+                                    builder: (context, detailSnapshot) {
+                                      final items =
+                                          detailSnapshot.data ??
+                                          <_OnlineOrderItem>[];
+                                      final total =
+                                          (selectedOrder['total_price']
+                                              as num?) ??
+                                          (selectedOrder['total_amount']
+                                              as num?) ??
+                                          0;
+                                      return Padding(
+                                        padding: const EdgeInsets.all(16),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Order #${selectedOrder['id']} • ${selectedOrder['customer_name'] ?? 'Guest'}',
+                                              style: const TextStyle(
+                                                fontSize: 20,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              'Status: ${(selectedOrder['status'] ?? '-').toString().toUpperCase()} • Source: ${(selectedOrder['order_source'] ?? '-').toString().toUpperCase()}',
+                                              style: TextStyle(
+                                                color: Colors.blue.shade700,
+                                              ),
+                                            ),
+                                            if ((selectedOrder['notes'] ?? '')
+                                                .toString()
+                                                .isNotEmpty)
+                                              Padding(
+                                                padding: const EdgeInsets.only(
+                                                  top: 8,
+                                                ),
+                                                child: Text(
+                                                  'Notes: ${selectedOrder['notes']}',
+                                                ),
+                                              ),
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 8,
+                                              ),
+                                              child: Text(
+                                                'Total: ${_formatRupiah(total)}',
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 12),
+                                            Expanded(
+                                              child:
+                                                  detailSnapshot
+                                                              .connectionState ==
+                                                          ConnectionState
+                                                              .waiting &&
+                                                      items.isEmpty
+                                                  ? const Center(
+                                                      child:
+                                                          CircularProgressIndicator(),
+                                                    )
+                                                  : items.isEmpty
+                                                  ? const Center(
+                                                      child: Text(
+                                                        'No order items found.',
+                                                      ),
+                                                    )
+                                                  : ListView.separated(
+                                                      itemCount: items.length,
+                                                      separatorBuilder:
+                                                          (_, __) =>
+                                                              const Divider(),
+                                                      itemBuilder: (_, index) {
+                                                        final item =
+                                                            items[index];
+                                                        final itemTotal =
+                                                            ((item.product.price +
+                                                                        _modifierExtraFromData(
+                                                                          item.modifiersData,
+                                                                        )) *
+                                                                    item.quantity)
+                                                                .toDouble();
+                                                        return ListTile(
+                                                          title: Text(
+                                                            item.product.name,
+                                                          ),
+                                                          subtitle: Text(
+                                                            _onlineOrderItemSubtitle(
+                                                              item,
+                                                            ),
+                                                          ),
+                                                          trailing: Text(
+                                                            _formatRupiah(
+                                                              itemTotal,
+                                                            ),
+                                                          ),
+                                                        );
+                                                      },
+                                                    ),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
+                      );
+                    }
+
+                    Widget shiftTab() {
+                      return FutureBuilder<List<Map<String, dynamic>>>(
+                        future: shiftRowsFuture,
+                        builder: (context, shiftSnapshot) {
+                          final shifts =
+                              shiftSnapshot.data ?? <Map<String, dynamic>>[];
+
+                          if (selectedShiftId != null &&
+                              shifts.every(
+                                (shift) =>
+                                    (shift['id'] as num?)?.toInt() !=
+                                    selectedShiftId,
+                              )) {
+                            selectedShiftId = null;
+                          }
+                          selectedShiftId ??= shifts.isEmpty
+                              ? null
+                              : (shifts.first['id'] as num?)?.toInt();
+
+                          final selectedShift = selectedShiftId == null
+                              ? null
+                              : shifts.firstWhere(
+                                  (shift) =>
+                                      (shift['id'] as num?)?.toInt() ==
+                                      selectedShiftId,
+                                  orElse: () => <String, dynamic>{},
+                                );
+
+                          final selectedShiftOrders = selectedShiftId == null
+                              ? <Map<String, dynamic>>[]
+                              : rawOrders
+                                    .where((order) {
+                                      return (order['shift_id'] as num?)
+                                              ?.toInt() ==
+                                          selectedShiftId;
+                                    })
+                                    .toList(growable: false);
+
+                          final shiftTotal = selectedShiftOrders.fold<num>(
+                            0,
+                            (sum, order) =>
+                                sum +
+                                ((order['total_price'] as num?) ??
+                                    (order['total_amount'] as num?) ??
+                                    0),
+                          );
+
+                          final cashierIds = <int>{
+                            for (final shift in shifts) ...[
+                              if (_toInt(shift['opened_by']) != null)
+                                _toInt(shift['opened_by'])!,
+                              if (_toInt(shift['closed_by']) != null)
+                                _toInt(shift['closed_by'])!,
+                              if (_toInt(shift['current_cashier_id']) != null)
+                                _toInt(shift['current_cashier_id'])!,
+                            ],
+                          };
+
+                          return FutureBuilder<Map<int, String>>(
+                            future: _fetchCashierNamesByIds(cashierIds),
+                            builder: (context, cashierSnapshot) {
+                              final cashierNames =
+                                  cashierSnapshot.data ?? <int, String>{};
+                              String cashierNameFor(dynamic rawId) {
+                                final id = _toInt(rawId);
+                                if (id == null) return '-';
+                                return cashierNames[id] ?? '#$id';
+                              }
+
+                              return Row(
+                                children: [
+                                  Container(
+                                    width: 430,
+                                    decoration: BoxDecoration(
+                                      border: Border(
+                                        right: BorderSide(
+                                          color: Colors.blue.shade100,
+                                        ),
+                                      ),
+                                      color: Colors.white,
+                                    ),
+                                    child: shifts.isEmpty
+                                        ? const Center(
+                                            child: Text('No shifts found.'),
+                                          )
+                                        : ListView.builder(
+                                            padding: const EdgeInsets.all(12),
+                                            itemCount: shifts.length,
+                                            itemBuilder: (_, index) {
+                                              final shift = shifts[index];
+                                              final shiftId =
+                                                  (shift['id'] as num?)
+                                                      ?.toInt();
+                                              final isSelected =
+                                                  shiftId == selectedShiftId;
+                                              final orderCount = rawOrders
+                                                  .where(
+                                                    (order) =>
+                                                        (order['shift_id']
+                                                                as num?)
+                                                            ?.toInt() ==
+                                                        shiftId,
+                                                  )
+                                                  .length;
+                                              return Card(
+                                                margin:
+                                                    const EdgeInsets.symmetric(
+                                                      vertical: 4,
+                                                    ),
+                                                color: isSelected
+                                                    ? Colors.blue.withOpacity(
+                                                        0.08,
+                                                      )
+                                                    : null,
+                                                child: ListTile(
+                                                  onTap: shiftId == null
+                                                      ? null
+                                                      : () => setDialogState(
+                                                          () =>
+                                                              selectedShiftId =
+                                                                  shiftId,
+                                                        ),
+                                                  title: Text(
+                                                    'Shift #${shift['id']}',
+                                                  ),
+                                                  subtitle: Text(
+                                                    '${_shiftDateTimeRangeLabel(shift['started_at'], shift['ended_at'])}\nOrders: $orderCount',
+                                                  ),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                  ),
+                                  Expanded(
+                                    child:
+                                        selectedShift == null ||
+                                            selectedShift.isEmpty
+                                        ? const Center(
+                                            child: Text(
+                                              'Select a shift to see details.',
+                                            ),
+                                          )
+                                        : Padding(
+                                            padding: const EdgeInsets.all(16),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Row(
+                                                  children: [
+                                                    Expanded(
+                                                      child: Text(
+                                                        'Shift #${selectedShift['id']}',
+                                                        style: const TextStyle(
+                                                          fontSize: 20,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    ElevatedButton.icon(
+                                                      onPressed: () async {
+                                                        try {
+                                                          await _printShiftReport(
+                                                            shift:
+                                                                selectedShift,
+                                                            orders:
+                                                                selectedShiftOrders,
+                                                          );
+                                                          if (!mounted) return;
+                                                          _showDropdownSnackbar(
+                                                            'Shift report printed.',
+                                                          );
+                                                        } catch (error) {
+                                                          if (!mounted) return;
+                                                          _showDropdownSnackbar(
+                                                            'Failed to print shift report: $error',
+                                                            isError: true,
+                                                          );
+                                                        }
+                                                      },
+                                                      icon: const Icon(
+                                                        Icons.print,
+                                                      ),
+                                                      label: const Text(
+                                                        'Print',
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 8),
+                                                Text(
+                                                  'Cashier: ${cashierNameFor(selectedShift['current_cashier_id'])}',
+                                                ),
+                                                Text(
+                                                  'Opened: ${selectedShift['started_at'] == null ? '-' : _onlineDateLabel(selectedShift['started_at'])} ${_onlineTimeLabel(selectedShift['started_at'])}',
+                                                ),
+                                                Text(
+                                                  'Closed: ${selectedShift['ended_at'] == null ? 'OPEN' : '${_onlineDateLabel(selectedShift['ended_at'])} ${_onlineTimeLabel(selectedShift['ended_at'])}'}',
+                                                ),
+                                                Text(
+                                                  'Opened by: ${cashierNameFor(selectedShift['opened_by'])}',
+                                                ),
+                                                Text(
+                                                  'Closed by: ${cashierNameFor(selectedShift['closed_by'])}',
+                                                ),
+                                                const SizedBox(height: 8),
+                                                Text(
+                                                  'Orders: ${selectedShiftOrders.length} • Total: ${_formatRupiah(shiftTotal)}',
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 12),
+                                                Expanded(
+                                                  child:
+                                                      selectedShiftOrders
+                                                          .isEmpty
+                                                      ? const Center(
+                                                          child: Text(
+                                                            'No orders in this shift.',
+                                                          ),
+                                                        )
+                                                      : ListView.separated(
+                                                          itemCount:
+                                                              selectedShiftOrders
+                                                                  .length,
+                                                          separatorBuilder:
+                                                              (_, __) =>
+                                                                  const Divider(),
+                                                          itemBuilder: (_, index) {
+                                                            final order =
+                                                                selectedShiftOrders[index];
+                                                            final total =
+                                                                (order['total_price']
+                                                                    as num?) ??
+                                                                (order['total_amount']
+                                                                    as num?) ??
+                                                                0;
+                                                            return ListTile(
+                                                              title: Text(
+                                                                'Order #${order['id']} • ${order['customer_name'] ?? 'Guest'}',
+                                                              ),
+                                                              subtitle: Text(
+                                                                '${(order['status'] ?? '-').toString().toUpperCase()} • ${_onlineTimeLabel(order['created_at'])}',
+                                                              ),
+                                                              trailing: Text(
+                                                                _formatRupiah(
+                                                                  total,
+                                                                ),
+                                                              ),
+                                                            );
+                                                          },
+                                                        ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                  ),
+                                ],
+                              );
+                            },
+                          );
+                        },
+                      );
+                    }
+
                     return Column(
                       children: [
                         if (snapshot.hasError)
@@ -335,9 +1008,11 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                     color: Colors.blue,
                                   ),
                                   const SizedBox(width: 8),
-                                  const Text(
-                                    'All Orders',
-                                    style: TextStyle(
+                                  Text(
+                                    selectedTab == 'orders'
+                                        ? 'All Orders'
+                                        : 'Shift Report',
+                                    style: const TextStyle(
                                       fontSize: 18,
                                       fontWeight: FontWeight.w700,
                                     ),
@@ -351,294 +1026,92 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                 ],
                               ),
                               const SizedBox(height: 10),
-                              TextField(
-                                onChanged: (value) =>
-                                    setDialogState(() => searchQuery = value),
-                                decoration: InputDecoration(
-                                  hintText:
-                                      'Search order id, customer, notes, source...',
-                                  prefixIcon: const Icon(Icons.search),
-                                  filled: true,
-                                  fillColor: Colors.white,
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    borderSide: BorderSide(
-                                      color: Colors.blue.shade100,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 12),
                               Row(
                                 children: [
-                                  statusCard(
-                                    value: 'all',
-                                    label: 'All',
-                                    color: Colors.blue,
+                                  ChoiceChip(
+                                    label: const Text('Orders'),
+                                    selected: selectedTab == 'orders',
+                                    onSelected: (_) => setDialogState(
+                                      () => selectedTab = 'orders',
+                                    ),
                                   ),
                                   const SizedBox(width: 8),
-                                  statusCard(
-                                    value: OrderStatus.pending,
-                                    label: 'Pending',
-                                    color: Colors.orange,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  statusCard(
-                                    value: OrderStatus.active,
-                                    label: 'Active',
-                                    color: Colors.teal,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  statusCard(
-                                    value: OrderStatus.processing,
-                                    label: 'Processing',
-                                    color: Colors.indigo,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  statusCard(
-                                    value: OrderStatus.completed,
-                                    label: 'Completed',
-                                    color: Colors.green,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  statusCard(
-                                    value: OrderStatus.cancelled,
-                                    label: 'Cancelled',
-                                    color: Colors.red,
+                                  ChoiceChip(
+                                    label: const Text('Shift Report'),
+                                    selected: selectedTab == 'shift_report',
+                                    onSelected: (_) => setDialogState(
+                                      () => selectedTab = 'shift_report',
+                                    ),
                                   ),
                                 ],
                               ),
+                              if (selectedTab == 'orders') ...[
+                                const SizedBox(height: 12),
+                                TextField(
+                                  onChanged: (value) =>
+                                      setDialogState(() => searchQuery = value),
+                                  decoration: InputDecoration(
+                                    hintText:
+                                        'Search order id, customer, notes, source...',
+                                    prefixIcon: const Icon(Icons.search),
+                                    filled: true,
+                                    fillColor: Colors.white,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: BorderSide(
+                                        color: Colors.blue.shade100,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    statusCard(
+                                      value: 'all',
+                                      label: 'All',
+                                      color: Colors.blue,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    statusCard(
+                                      value: OrderStatus.pending,
+                                      label: 'Pending',
+                                      color: Colors.orange,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    statusCard(
+                                      value: OrderStatus.active,
+                                      label: 'Active',
+                                      color: Colors.teal,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    statusCard(
+                                      value: OrderStatus.processing,
+                                      label: 'Processing',
+                                      color: Colors.indigo,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    statusCard(
+                                      value: OrderStatus.completed,
+                                      label: 'Completed',
+                                      color: Colors.green,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    statusCard(
+                                      value: OrderStatus.cancelled,
+                                      label: 'Cancelled',
+                                      color: Colors.red,
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ],
                           ),
                         ),
                         Expanded(
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 430,
-                                decoration: BoxDecoration(
-                                  border: Border(
-                                    right: BorderSide(
-                                      color: Colors.blue.shade100,
-                                    ),
-                                  ),
-                                  color: Colors.white,
-                                ),
-                                child: filtered.isEmpty
-                                    ? const Center(
-                                        child: Text('No orders found.'),
-                                      )
-                                    : ListView(
-                                        padding: const EdgeInsets.all(12),
-                                        children: grouped.entries.expand((
-                                          entry,
-                                        ) {
-                                          final header = Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                              vertical: 8,
-                                            ),
-                                            child: Text(
-                                              '${entry.key}:',
-                                              style: TextStyle(
-                                                color: Colors.blue.shade700,
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                            ),
-                                          );
-
-                                          final tiles = entry.value.map((
-                                            order,
-                                          ) {
-                                            final orderId = order['id'];
-                                            final customer =
-                                                order['customer_name']
-                                                        ?.toString()
-                                                        .trim()
-                                                        .isNotEmpty ==
-                                                    true
-                                                ? order['customer_name']
-                                                : 'Guest';
-                                            final status =
-                                                (order['status'] ?? '-')
-                                                    .toString();
-                                            final source =
-                                                (order['order_source'] ?? '-')
-                                                    .toString();
-                                            final total =
-                                                (order['total_price']
-                                                    as num?) ??
-                                                (order['total_amount']
-                                                    as num?) ??
-                                                0;
-                                            final isSelected =
-                                                (order['id'] as num?)
-                                                    ?.toInt() ==
-                                                selectedOrderId;
-                                            return Card(
-                                              elevation: 0,
-                                              margin:
-                                                  const EdgeInsets.symmetric(
-                                                    vertical: 4,
-                                                  ),
-                                              color: isSelected
-                                                  ? Colors.blue.withOpacity(
-                                                      0.08,
-                                                    )
-                                                  : null,
-                                              child: ListTile(
-                                                onTap: () => setDialogState(() {
-                                                  selectedOrderId =
-                                                      (order['id'] as num?)
-                                                          ?.toInt();
-                                                }),
-                                                title: Text(
-                                                  'Order #$orderId • $customer',
-                                                ),
-                                                subtitle: Text(
-                                                  '${status.toUpperCase()} • ${source.toUpperCase()} • ${_formatRupiah(total)}',
-                                                ),
-                                                trailing: const Icon(
-                                                  Icons.chevron_right,
-                                                ),
-                                              ),
-                                            );
-                                          }).toList();
-
-                                          return [header, ...tiles];
-                                        }).toList(),
-                                      ),
-                              ),
-                              Expanded(
-                                child:
-                                    selectedOrder == null ||
-                                        selectedOrder.isEmpty
-                                    ? const Center(
-                                        child: Text(
-                                          'Select an order to see details.',
-                                        ),
-                                      )
-                                    : FutureBuilder<List<_OnlineOrderItem>>(
-                                        future: _fetchOrderItems(
-                                          (selectedOrder['id'] as num).toInt(),
-                                        ),
-                                        builder: (context, detailSnapshot) {
-                                          final items =
-                                              detailSnapshot.data ??
-                                              <_OnlineOrderItem>[];
-                                          final total =
-                                              (selectedOrder['total_price']
-                                                  as num?) ??
-                                              (selectedOrder['total_amount']
-                                                  as num?) ??
-                                              0;
-                                          return Padding(
-                                            padding: const EdgeInsets.all(16),
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  'Order #${selectedOrder['id']} • ${selectedOrder['customer_name'] ?? 'Guest'}',
-                                                  style: const TextStyle(
-                                                    fontSize: 20,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 8),
-                                                Text(
-                                                  'Status: ${(selectedOrder['status'] ?? '-').toString().toUpperCase()} • Source: ${(selectedOrder['order_source'] ?? '-').toString().toUpperCase()}',
-                                                  style: TextStyle(
-                                                    color: Colors.blue.shade700,
-                                                  ),
-                                                ),
-                                                if ((selectedOrder['notes'] ??
-                                                        '')
-                                                    .toString()
-                                                    .isNotEmpty)
-                                                  Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          top: 8,
-                                                        ),
-                                                    child: Text(
-                                                      'Notes: ${selectedOrder['notes']}',
-                                                    ),
-                                                  ),
-                                                Padding(
-                                                  padding:
-                                                      const EdgeInsets.only(
-                                                        top: 8,
-                                                      ),
-                                                  child: Text(
-                                                    'Total: ${_formatRupiah(total)}',
-                                                    style: const TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 12),
-                                                Expanded(
-                                                  child:
-                                                      detailSnapshot
-                                                                  .connectionState ==
-                                                              ConnectionState
-                                                                  .waiting &&
-                                                          items.isEmpty
-                                                      ? const Center(
-                                                          child:
-                                                              CircularProgressIndicator(),
-                                                        )
-                                                      : items.isEmpty
-                                                      ? const Center(
-                                                          child: Text(
-                                                            'No order items found.',
-                                                          ),
-                                                        )
-                                                      : ListView.separated(
-                                                          itemCount:
-                                                              items.length,
-                                                          separatorBuilder:
-                                                              (_, __) =>
-                                                                  const Divider(),
-                                                          itemBuilder: (_, index) {
-                                                            final item =
-                                                                items[index];
-                                                            final itemTotal =
-                                                                ((item.product.price +
-                                                                            _modifierExtraFromData(
-                                                                              item.modifiersData,
-                                                                            )) *
-                                                                        item.quantity)
-                                                                    .toDouble();
-                                                            return ListTile(
-                                                              title: Text(
-                                                                item
-                                                                    .product
-                                                                    .name,
-                                                              ),
-                                                              subtitle: Text(
-                                                                _onlineOrderItemSubtitle(
-                                                                  item,
-                                                                ),
-                                                              ),
-                                                              trailing: Text(
-                                                                _formatRupiah(
-                                                                  itemTotal,
-                                                                ),
-                                                              ),
-                                                            );
-                                                          },
-                                                        ),
-                                                ),
-                                              ],
-                                            ),
-                                          );
-                                        },
-                                      ),
-                              ),
-                            ],
-                          ),
+                          child: selectedTab == 'orders'
+                              ? ordersTab()
+                              : shiftTab(),
                         ),
                       ],
                     );
