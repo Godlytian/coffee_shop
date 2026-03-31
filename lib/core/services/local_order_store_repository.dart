@@ -136,18 +136,15 @@ class LocalOrderStoreRepository {
     await _emitAll();
   }
 
-  // Phase 3: Aggressive Reconciliation (Protected)
   Future<void> reconcileOrders(
     List<Map<String, dynamic>> activeRemoteOrders,
   ) async {
     await init();
 
-    // 1. Extract IDs from the fresh remote payload as strong Integers
     final remoteIds = activeRemoteOrders
         .map((o) => (o['id'] as num).toInt())
         .toSet();
 
-    // 2. Fetch all current local order IDs
     final localRows = await _database.query(_table, columns: ['id']);
     final localIds = localRows.map((row) => (row['id'] as num).toInt()).toSet();
 
@@ -156,19 +153,15 @@ class LocalOrderStoreRepository {
         .where((id) => id > 0)
         .toSet();
 
-    // 4. Delete only the confirmed ghosts
     if (ghostIds.isNotEmpty) {
       final batch = _database.batch();
       for (final id in ghostIds) {
         batch.delete(_table, where: 'id = ?', whereArgs: [id]);
       }
       await batch.commit();
-      print(
-        'Reconciled & Deleted Ghost Orders: $ghostIds',
-      ); // Helpful for debugging
+      print('Reconciled & Deleted Ghost Orders: $ghostIds');
     }
 
-    // 5. Safely upsert the fresh active orders
     await upsertOrders(activeRemoteOrders);
 
     await _emitAll();

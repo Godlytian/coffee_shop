@@ -56,7 +56,7 @@ class OrderSyncService {
           )
           .subscribe();
     } catch (e) {
-      print('Order Sync Error during startup: $e'); // <-- Add this!
+      print('Order Sync Error during startup: $e');
     }
   }
 
