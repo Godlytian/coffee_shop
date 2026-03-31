@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:blue_thermal_printer/blue_thermal_printer.dart';
+import 'package:coffee_shop/core/utils/formatters.dart';
 import 'package:flutter/services.dart';
 
 class ThermalPrinterService {
@@ -8,6 +9,14 @@ class ThermalPrinterService {
   static final ThermalPrinterService instance = ThermalPrinterService._();
 
   final BlueThermalPrinter _printer = BlueThermalPrinter.instance;
+
+  String _formatPrice(num value) => CurrencyFormatters.formatRupiah(value);
+
+  String _truncateForPaper(String value, {int maxChars = 20}) {
+    final clean = value.trim();
+    if (clean.length <= maxChars) return clean;
+    return '${clean.substring(0, maxChars - 1)}…';
+  }
 
   Future<List<BluetoothDevice>> getBondedDevices() async {
     try {
@@ -111,7 +120,7 @@ class ThermalPrinterService {
       final subtotal = (line['subtotal'] as num?) ?? 0;
 
       // printLeftRight puts the item name and price perfectly on opposite sides
-      await _printer.printLeftRight('$name x$qty', 'Rp ${subtotal.toInt()}', 1);
+      await _printer.printLeftRight('$qty $name', _formatPrice(subtotal), 1);
 
       // Handle Add-ons if they exist in your data structure
       if (line['addons'] != null) {
@@ -124,7 +133,7 @@ class ThermalPrinterService {
           if (addonPrice > 0) {
             await _printer.printLeftRight(
               '  -$addonName',
-              'Rp ${addonPrice.toInt()}',
+              _formatPrice(addonPrice),
               1,
             );
           } else {
@@ -138,7 +147,7 @@ class ThermalPrinterService {
     await _printer.printCustom('--------------------------------', 1, 1);
 
     // Totals and Payments
-    await _printer.printLeftRight('Total:', 'Rp ${total.toInt()}', 1);
+    await _printer.printLeftRight('Total:', _formatPrice(total), 1);
     await _printer.printLeftRight(
       'Payment Method:',
       paymentMethod.toUpperCase(),
@@ -147,8 +156,8 @@ class ThermalPrinterService {
 
     // Hide Paid and Change lines if the payment is QRIS
     if (paymentMethod.toLowerCase() != 'qris') {
-      await _printer.printLeftRight('Paid:', 'Rp ${paid.toInt()}', 1);
-      await _printer.printLeftRight('Change:', 'Rp ${change.toInt()}', 1);
+      await _printer.printLeftRight('Paid:', _formatPrice(paid), 1);
+      await _printer.printLeftRight('Change:', _formatPrice(change), 1);
     }
 
     // Footer
@@ -166,7 +175,12 @@ class ThermalPrinterService {
   Future<void> printShiftReceipt({
     required int shiftId,
     required String cashierName,
+    required String openedAt,
+    required String closedAt,
     required List<Map<String, dynamic>> items,
+    required int totalOrders,
+    required num cashTotal,
+    required num qrisTotal,
     required num total,
   }) async {
     if (!(await isConnected)) {
@@ -184,6 +198,9 @@ class ThermalPrinterService {
     await _printer.printCustom('--------------------------------', 1, 1);
 
     await _printer.printCustom('Cashier: $cashierName', 1, 0);
+    await _printer.printCustom('Opened: $openedAt', 1, 0);
+    await _printer.printCustom('Closed: $closedAt', 1, 0);
+    await _printer.printCustom('Total Orders: $totalOrders', 1, 0);
 
     await _printer.printNewLine();
     await _printer.printCustom('Items:', 1, 0);
@@ -192,12 +209,30 @@ class ThermalPrinterService {
       final name = item['name']?.toString() ?? '-';
       final qty = (item['qty'] as num?)?.toInt() ?? 1;
       final subtotal = (item['subtotal'] as num?) ?? 0;
+      final compactLabel = '$qty ${_truncateForPaper(name)}';
 
-      await _printer.printLeftRight('$name x$qty', 'Rp ${subtotal.toInt()}', 1);
+      await _printer.printLeftRight(compactLabel, _formatPrice(subtotal), 1);
+      if (item['addons'] != null) {
+        final addons = item['addons'] as List<dynamic>;
+        for (final addonObj in addons) {
+          final addon = addonObj as Map<String, dynamic>;
+          final addonName = addon['name']?.toString() ?? 'Add-on';
+          final addonPrice = (addon['price'] as num?) ?? 0;
+          if (addonPrice > 0) {
+            await _printer.printLeftRight(
+              '  +$addonName',
+              _formatPrice(addonPrice),
+              1,
+            );
+          }
+        }
+      }
     }
 
     await _printer.printCustom('--------------------------------', 1, 1);
-    await _printer.printLeftRight('Total:', 'Rp ${total.toInt()}', 1);
+    await _printer.printLeftRight('Cash:', _formatPrice(cashTotal), 1);
+    await _printer.printLeftRight('QRIS:', _formatPrice(qrisTotal), 1);
+    await _printer.printLeftRight('Total:', _formatPrice(total), 1);
 
     await _printer.printNewLine();
     await _printer.printNewLine();

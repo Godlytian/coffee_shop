@@ -274,6 +274,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
   Future<void> _printShiftReport({
     required Map<String, dynamic> shift,
     required List<Map<String, dynamic>> orders,
+    required String cashierName,
   }) async {
     final shiftId = (shift['id'] as num?)?.toInt() ?? 0;
 
@@ -286,32 +287,194 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
               0),
     );
 
-    final lines = orders
-        .map((order) {
-          final total =
-              (order['total_price'] as num?) ??
-              (order['total_amount'] as num?) ??
-              0;
+    final aggregatedItems = <String, Map<String, dynamic>>{};
+    for (final order in orders) {
+      final orderId = _toInt(order['id']);
+      if (orderId == null) continue;
+      final orderItems = await _fetchOrderItems(orderId, orderSnapshot: order);
+      for (final item in orderItems) {
+        final baseKey = 'item:${item.product.name}|${item.product.price}';
+        final entry = aggregatedItems.putIfAbsent(baseKey, () {
           return <String, dynamic>{
-            'name':
-                'Order #${order['id']} ${(order['status'] ?? '-').toString().toUpperCase()}',
-            'qty': 1,
-            'subtotal': total,
+            'name': item.product.name,
+            'qty': 0,
+            'subtotal': 0.0,
+            'addons': <Map<String, dynamic>>[],
           };
-        })
-        .toList(growable: false);
+        });
+        final baseSubtotal = item.product.price * item.quantity;
+        entry['qty'] = ((entry['qty'] as num?)?.toInt() ?? 0) + item.quantity;
+        entry['subtotal'] =
+            ((entry['subtotal'] as num?)?.toDouble() ?? 0) + baseSubtotal;
 
-    final cashierId = shift['current_cashier_id']?.toString() ?? '-';
-    final timeRangeLabel = _shiftDateTimeRangeLabel(
-      shift['started_at'],
-      shift['ended_at'],
-    );
+        final addons = (entry['addons'] as List<Map<String, dynamic>>);
+        for (final group
+            in (item.modifiersData ?? <dynamic>[])
+                .whereType<Map<String, dynamic>>()) {
+          final selected =
+              (group['selected_options'] as List<dynamic>? ?? <dynamic>[])
+                  .whereType<Map<String, dynamic>>();
+          for (final option in selected) {
+            final price = (option['price'] as num?)?.toDouble() ?? 0;
+            if (price <= 0) continue;
+            final name = option['name']?.toString().trim();
+            if (name == null || name.isEmpty) continue;
+            final addonKey = 'addon:$name|$price';
+            final existingIndex = addons.indexWhere(
+              (addon) => addon['key'] == addonKey,
+            );
+            if (existingIndex == -1) {
+              addons.add({
+                'key': addonKey,
+                'name': name,
+                'price': price,
+                'qty': item.quantity,
+              });
+            } else {
+              final existing = addons[existingIndex];
+              existing['qty'] =
+                  ((existing['qty'] as num?)?.toInt() ?? 0) + item.quantity;
+            }
+          }
+        }
+      }
+    }
+
+    final lines =
+        aggregatedItems.values
+            .map((entry) {
+              final addons = (entry['addons'] as List<Map<String, dynamic>>)
+                  .map((addon) {
+                    final qty = (addon['qty'] as num?)?.toInt() ?? 1;
+                    final price = (addon['price'] as num?)?.toDouble() ?? 0;
+                    return <String, dynamic>{
+                      'name': qty > 1
+                          ? '${addon['name']} x$qty'
+                          : '${addon['name']}',
+                      'price': qty * price,
+                    };
+                  })
+                  .toList(growable: false);
+              return <String, dynamic>{
+                'name': entry['name'],
+                'qty': entry['qty'],
+                'subtotal': entry['subtotal'],
+                'addons': addons,
+              };
+            })
+            .toList(growable: false)
+          ..sort(
+            (a, b) => (a['name'] ?? '').toString().compareTo(
+              (b['name'] ?? '').toString(),
+            ),
+          );
+
+    final startedAt = shift['started_at'];
+    final endedAt = shift['ended_at'];
+    final cashierName = shift['current_cashier_id']?.toString() ?? '-';
+    final cashTotal = orders.fold<num>(0, (sum, order) {
+      final method = (order['payment_method'] ?? '').toString().toLowerCase();
+      if (method != 'cash') return sum;
+      return sum +
+          ((order['total_price'] as num?) ??
+              (order['total_amount'] as num?) ??
+              0);
+    });
+    final qrisTotal = orders.fold<num>(0, (sum, order) {
+      final method = (order['payment_method'] ?? '').toString().toLowerCase();
+      if (method != 'qris') return sum;
+      return sum +
+          ((order['total_price'] as num?) ??
+              (order['total_amount'] as num?) ??
+              0);
+    });
 
     await ThermalPrinterService.instance.printShiftReceipt(
       shiftId: shiftId,
-      cashierName: '$cashierId | $timeRangeLabel',
+      cashierName: cashierName,
+      openedAt: startedAt == null
+          ? '-'
+          : '${_onlineDateLabel(startedAt)} ${_onlineTimeLabel(startedAt)}',
+      closedAt: endedAt == null
+          ? 'OPEN'
+          : '${_onlineDateLabel(endedAt)} ${_onlineTimeLabel(endedAt)}',
       items: lines,
+      totalOrders: orders.length,
+      cashTotal: cashTotal,
+      qrisTotal: qrisTotal,
       total: shiftTotal,
+    );
+  }
+
+  Future<void> _showShiftOrderDetailsModal(Map<String, dynamic> order) async {
+    final orderId = (order['id'] as num?)?.toInt();
+    if (orderId == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text('Order #$orderId details'),
+          content: SizedBox(
+            width: 520,
+            child: FutureBuilder<List<_OnlineOrderItem>>(
+              future: _fetchOrderItems(orderId, orderSnapshot: order),
+              builder: (context, snapshot) {
+                final items = snapshot.data ?? <_OnlineOrderItem>[];
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    items.isEmpty) {
+                  return const SizedBox(
+                    height: 180,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Customer: ${order['customer_name'] ?? 'Guest'}'),
+                    Text(
+                      'Total: ${_formatRupiah((order['total_price'] as num?) ?? (order['total_amount'] as num?) ?? 0)}',
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Items',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 8),
+                    Flexible(
+                      child: items.isEmpty
+                          ? const Text('No order items found.')
+                          : ListView.separated(
+                              shrinkWrap: true,
+                              itemCount: items.length,
+                              separatorBuilder: (_, __) => const Divider(),
+                              itemBuilder: (_, index) {
+                                final item = items[index];
+                                return ListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text(item.product.name),
+                                  subtitle: Text(
+                                    _onlineOrderItemSubtitle(item),
+                                  ),
+                                  trailing: Text('x${item.quantity}'),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -922,6 +1085,33 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                         !isDeleted;
                                                   })
                                                   .length;
+                                              final shiftOrderTotal = rawOrders
+                                                  .where((order) {
+                                                    final status =
+                                                        (order['status'] ?? '')
+                                                            .toString();
+                                                    final isDeleted =
+                                                        order['deleted_at'] !=
+                                                        null;
+                                                    return (order['shift_id']
+                                                                    as num?)
+                                                                ?.toInt() ==
+                                                            shiftId &&
+                                                        status ==
+                                                            OrderStatus
+                                                                .completed &&
+                                                        !isDeleted;
+                                                  })
+                                                  .fold<num>(
+                                                    0,
+                                                    (sum, order) =>
+                                                        sum +
+                                                        ((order['total_price']
+                                                                as num?) ??
+                                                            (order['total_amount']
+                                                                as num?) ??
+                                                            0),
+                                                  );
                                               return Card(
                                                 margin:
                                                     const EdgeInsets.symmetric(
@@ -944,7 +1134,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                     'Shift #${shift['id']}',
                                                   ),
                                                   subtitle: Text(
-                                                    '${_shiftDateTimeRangeLabel(shift['started_at'], shift['ended_at'])}\nOrders: $orderCount',
+                                                    '${_shiftDateTimeRangeLabel(shift['started_at'], shift['ended_at'])}\nOrders: $orderCount • Total: ${_formatRupiah(shiftOrderTotal)}',
                                                   ),
                                                 ),
                                               );
@@ -986,6 +1176,10 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                                 selectedShift,
                                                             orders:
                                                                 selectedShiftOrders,
+                                                            cashierName:
+                                                                cashierNameFor(
+                                                                  selectedShift['current_cashier_id'],
+                                                                ),
                                                           );
                                                           if (!mounted) return;
                                                           _showDropdownSnackbar(
@@ -1058,6 +1252,10 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                                     as num?) ??
                                                                 0;
                                                             return ListTile(
+                                                              onTap: () =>
+                                                                  _showShiftOrderDetailsModal(
+                                                                    order,
+                                                                  ),
                                                               title: Text(
                                                                 'Order #${order['id']} • ${order['customer_name'] ?? 'Guest'}',
                                                               ),
