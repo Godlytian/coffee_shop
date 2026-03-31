@@ -1290,11 +1290,16 @@ class _ProductListScreenState extends State<ProductListScreen> {
             );
 
       if (!mounted) return;
-      _resetCurrentOrderDraft(showMessage: false);
+      if (savedOrderId != 0) {
+        setState(() {
+          _currentActiveOrderId = savedOrderId;
+          _pendingParentOrderIdForNextSubmit = null;
+        });
+      }
       _showDropdownSnackbar(
         (savedOrderId > 0)
             ? 'Order saved successfully.'
-            : 'Offline saved. Sync later from app menu.',
+            : 'saved Offline. sync later from app menu.',
       );
     } catch (error) {
       if (!mounted) return;

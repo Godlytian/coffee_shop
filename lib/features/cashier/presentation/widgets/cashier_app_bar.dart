@@ -1233,6 +1233,33 @@ extension CashierAppBarMethods on _ProductListScreenState {
         return;
       }
     }
+
+    final allOrders = await LocalOrderStoreRepository.instance.fetchAllOrders();
+    final activeStatuses = <String>{
+      OrderStatus.pending,
+      OrderStatus.active,
+      OrderStatus.processing,
+      OrderStatus.assigned,
+      OrderStatus.paid,
+    };
+    final remainingActiveOrders = allOrders.where((order) {
+      final status = (order['status'] ?? '').toString();
+      final isDeleted = order['deleted_at'] != null;
+      final orderShiftId = _asInt(order['shift_id']);
+      return !isDeleted &&
+          activeStatuses.contains(status) &&
+          orderShiftId == shiftId; 
+    }).length;
+
+    if (remainingActiveOrders > 0) {
+      final shouldContinue = await _showActiveOrdersOnCloseShiftDialog(
+        activeOrderCount: remainingActiveOrders,
+      );
+      if (!shouldContinue) {
+        return;
+      }
+    }
+
     try {
       await supabase
           .from('shifts')
@@ -1276,6 +1303,33 @@ extension CashierAppBarMethods on _ProductListScreenState {
       );
       await _showOpenShiftDialog();
     }
+  }
+
+  Future<bool> _showActiveOrdersOnCloseShiftDialog({
+    required int activeOrderCount,
+  }) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Active orders still running'),
+          content: Text(
+            'There are $activeOrderCount active order(s) in this shift. You can continue these orders after opening a new shift. Close this shift now?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Continue & Open New Shift'),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? false;
   }
 
   Future<bool> _showUnsyncedWarningDialog({required int pendingCount}) async {

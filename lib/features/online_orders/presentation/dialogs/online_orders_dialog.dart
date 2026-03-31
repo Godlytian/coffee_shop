@@ -276,6 +276,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     required List<Map<String, dynamic>> orders,
   }) async {
     final shiftId = (shift['id'] as num?)?.toInt() ?? 0;
+
     final shiftTotal = orders.fold<num>(
       0,
       (sum, order) =>
@@ -284,6 +285,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
               (order['total_amount'] as num?) ??
               0),
     );
+
     final lines = orders
         .map((order) {
           final total =
@@ -299,19 +301,17 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
         })
         .toList(growable: false);
 
-    await ThermalPrinterService.instance.printPaymentReceipt(
-      orderId: shiftId == 0 ? -1 : shiftId,
-      lines: lines,
+    final cashierId = shift['current_cashier_id']?.toString() ?? '-';
+    final timeRangeLabel = _shiftDateTimeRangeLabel(
+      shift['started_at'],
+      shift['ended_at'],
+    );
+
+    await ThermalPrinterService.instance.printShiftReceipt(
+      shiftId: shiftId,
+      cashierName: '$cashierId | $timeRangeLabel',
+      items: lines,
       total: shiftTotal,
-      paymentMethod: 'shift',
-      paid: shiftTotal,
-      change: 0,
-      customerName:
-          'Shift #${shift['id'] ?? '-'} • Cashier ${shift['current_cashier_id'] ?? '-'}',
-      tableName: _shiftDateTimeRangeLabel(
-        shift['started_at'],
-        shift['ended_at'],
-      ),
     );
   }
 
@@ -616,12 +616,102 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
-                                            Text(
-                                              'Order #${selectedOrder['id']} • ${selectedOrder['customer_name'] ?? 'Guest'}',
-                                              style: const TextStyle(
-                                                fontSize: 20,
-                                                fontWeight: FontWeight.bold,
-                                              ),
+                                            Row(
+                                              children: [
+                                                Expanded(
+                                                  child: Text(
+                                                    'Order #${selectedOrder['id']} • ${selectedOrder['customer_name'] ?? 'Guest'}',
+                                                    style: const TextStyle(
+                                                      fontSize: 20,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                OutlinedButton.icon(
+                                                  onPressed: () async {
+                                                    final confirmed =
+                                                        await showDialog<bool>(
+                                                          context: context,
+                                                          builder: (confirmContext) {
+                                                            return AlertDialog(
+                                                              title: const Text(
+                                                                'Delete order?',
+                                                              ),
+                                                              content: Text(
+                                                                'Are you sure you want to delete order #${selectedOrder['id']}?',
+                                                              ),
+                                                              actions: [
+                                                                TextButton(
+                                                                  onPressed: () =>
+                                                                      Navigator.of(
+                                                                        confirmContext,
+                                                                      ).pop(
+                                                                        false,
+                                                                      ),
+                                                                  child:
+                                                                      const Text(
+                                                                        'Cancel',
+                                                                      ),
+                                                                ),
+                                                                ElevatedButton(
+                                                                  onPressed: () =>
+                                                                      Navigator.of(
+                                                                        confirmContext,
+                                                                      ).pop(
+                                                                        true,
+                                                                      ),
+                                                                  child:
+                                                                      const Text(
+                                                                        'Delete',
+                                                                      ),
+                                                                ),
+                                                              ],
+                                                            );
+                                                          },
+                                                        ) ??
+                                                        false;
+                                                    if (!confirmed) return;
+
+                                                    try {
+                                                      await supabase
+                                                          .from('orders')
+                                                          .update({
+                                                            'deleted_at':
+                                                                DateTime.now()
+                                                                    .toIso8601String(),
+                                                            'status':
+                                                                OrderStatus
+                                                                    .cancelled,
+                                                          })
+                                                          .eq(
+                                                            'id',
+                                                            (selectedOrder['id']
+                                                                    as num)
+                                                                .toInt(),
+                                                          );
+                                                      if (!mounted) return;
+                                                      setDialogState(() {
+                                                        selectedOrderId = null;
+                                                      });
+                                                      _showDropdownSnackbar(
+                                                        'Order deleted.',
+                                                      );
+                                                    } catch (error) {
+                                                      if (!mounted) return;
+                                                      _showDropdownSnackbar(
+                                                        'Failed to delete order: $error',
+                                                        isError: true,
+                                                      );
+                                                    }
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.delete_outline,
+                                                  ),
+                                                  label: const Text('Delete'),
+                                                ),
+                                              ],
                                             ),
                                             const SizedBox(height: 8),
                                             Text(
@@ -745,9 +835,15 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                               ? <Map<String, dynamic>>[]
                               : rawOrders
                                     .where((order) {
+                                      final status = (order['status'] ?? '')
+                                          .toString();
+                                      final isDeleted =
+                                          order['deleted_at'] != null;
                                       return (order['shift_id'] as num?)
-                                              ?.toInt() ==
-                                          selectedShiftId;
+                                                  ?.toInt() ==
+                                              selectedShiftId &&
+                                          status == OrderStatus.completed &&
+                                          !isDeleted;
                                     })
                                     .toList(growable: false);
 
@@ -809,13 +905,22 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                               final isSelected =
                                                   shiftId == selectedShiftId;
                                               final orderCount = rawOrders
-                                                  .where(
-                                                    (order) =>
-                                                        (order['shift_id']
-                                                                as num?)
-                                                            ?.toInt() ==
-                                                        shiftId,
-                                                  )
+                                                  .where((order) {
+                                                    final status =
+                                                        (order['status'] ?? '')
+                                                            .toString();
+                                                    final isDeleted =
+                                                        order['deleted_at'] !=
+                                                        null;
+                                                    return (order['shift_id']
+                                                                    as num?)
+                                                                ?.toInt() ==
+                                                            shiftId &&
+                                                        status ==
+                                                            OrderStatus
+                                                                .completed &&
+                                                        !isDeleted;
+                                                  })
                                                   .length;
                                               return Card(
                                                 margin:
@@ -921,7 +1026,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                 ),
                                                 const SizedBox(height: 8),
                                                 Text(
-                                                  'Orders: ${selectedShiftOrders.length} • Total: ${_formatRupiah(shiftTotal)}',
+                                                  'Completed orders: ${selectedShiftOrders.length} • Total: ${_formatRupiah(shiftTotal)}',
                                                   style: const TextStyle(
                                                     fontWeight: FontWeight.w600,
                                                   ),

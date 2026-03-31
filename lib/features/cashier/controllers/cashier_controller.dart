@@ -915,29 +915,24 @@ extension CashierControllerMethods on _ProductListScreenState {
                   builder: (context, snapshot) {
                     final activeOrders =
                         snapshot.data ?? <Map<String, dynamic>>[];
-                    final switchableOrders = activeOrders
-                        .where((order) {
-                          final id = int.tryParse(
-                            order['id']?.toString() ?? '',
-                          );
-                          return id == null || id != _currentActiveOrderId;
-                        })
-                        .toList(growable: false);
+                    final listedOrders = List<Map<String, dynamic>>.from(
+                      activeOrders,
+                    );
 
                     if (selectedOrderId != null &&
-                        switchableOrders.every(
+                        listedOrders.every(
                           (order) =>
                               (order['id'] as num?)?.toInt() != selectedOrderId,
                         )) {
                       selectedOrderId = null;
                     }
-                    selectedOrderId ??= switchableOrders.isEmpty
+                    selectedOrderId ??= listedOrders.isEmpty
                         ? null
-                        : (switchableOrders.first['id'] as num?)?.toInt();
+                        : (listedOrders.first['id'] as num?)?.toInt();
 
                     final selectedOrder = selectedOrderId == null
                         ? null
-                        : switchableOrders.firstWhere(
+                        : listedOrders.firstWhere(
                             (order) =>
                                 (order['id'] as num?)?.toInt() ==
                                 selectedOrderId,
@@ -945,14 +940,12 @@ extension CashierControllerMethods on _ProductListScreenState {
                           );
 
                     if (snapshot.connectionState == ConnectionState.waiting &&
-                        switchableOrders.isEmpty) {
+                        listedOrders.isEmpty) {
                       return const Center(child: CircularProgressIndicator());
                     }
 
-                    if (switchableOrders.isEmpty) {
-                      return const Center(
-                        child: Text('No other active orders.'),
-                      );
+                    if (listedOrders.isEmpty) {
+                      return const Center(child: Text('No active orders.'));
                     }
 
                     return Row(
@@ -966,14 +959,17 @@ extension CashierControllerMethods on _ProductListScreenState {
                           ),
                           child: ListView.separated(
                             controller: activeOrdersScrollController,
-                            itemCount: switchableOrders.length,
+                            itemCount: listedOrders.length,
                             separatorBuilder: (_, __) =>
                                 const Divider(height: 1),
                             itemBuilder: (context, index) {
-                              final order = switchableOrders[index];
+                              final order = listedOrders[index];
                               final orderId = (order['id'] as num?)?.toInt();
                               final isSelected =
                                   orderId != null && orderId == selectedOrderId;
+                              final isCurrentInCart =
+                                  orderId != null &&
+                                  orderId == _currentActiveOrderId;
                               final customerName =
                                   order['customer_name']
                                           ?.toString()
@@ -994,7 +990,33 @@ extension CashierControllerMethods on _ProductListScreenState {
 
                               return ListTile(
                                 selected: isSelected,
-                                title: Text('Order #${order['id']}'),
+                                title: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text('Order #${order['id']}'),
+                                    ),
+                                    if (isCurrentInCart)
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.teal.withOpacity(0.12),
+                                          borderRadius: BorderRadius.circular(
+                                            12,
+                                          ),
+                                        ),
+                                        child: const Text(
+                                          'IN CART',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
                                 subtitle: Text(
                                   '$customerName\nTotal: ${_formatRupiah(total)} • $source',
                                   maxLines: 2,
