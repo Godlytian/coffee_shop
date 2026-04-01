@@ -107,14 +107,11 @@ class ThermalPrinterService {
     for (final line in lines) {
       final name = line['name']?.toString() ?? '-';
       final qty = (line['qty'] as num?)?.toInt() ?? 1;
-
       final subtotal = (line['subtotal'] as num?) ?? 0;
-      final price = (line['price'] as num?) ?? (qty > 0 ? subtotal / qty : 0);
 
-      await _printer.printCustom(name, 1, 0);
+      await _printer.printCustom('$qty $name', 1, 0);
 
-      final leftSide = ' └─ $qty x ${_formatPrice(price)}';
-      await _printer.printLeftRight(leftSide, _formatPrice(subtotal), 1);
+      await _printer.printLeftRight('  ->', _formatPrice(subtotal), 1);
 
       if (line['addons'] != null) {
         final addons = line['addons'] as List<dynamic>;
@@ -123,16 +120,14 @@ class ThermalPrinterService {
           final addonName = addon['name']?.toString() ?? 'Add-on';
           final addonPrice = (addon['price'] as num?) ?? 0;
 
-          final addonLeft = '    +$addonName';
-
           if (addonPrice > 0) {
             await _printer.printLeftRight(
-              addonLeft,
+              '    +$addonName',
               _formatPrice(addonPrice),
               1,
             );
           } else {
-            await _printer.printCustom(addonLeft, 1, 0);
+            await _printer.printCustom('    +$addonName', 1, 0);
           }
         }
       }
