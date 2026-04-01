@@ -252,7 +252,6 @@ class _ProductListScreenState extends State<ProductListScreen> {
     if (_isMenuProjectionUpdating || _allProductsCache.isEmpty) return;
     _isMenuProjectionUpdating = true;
     try {
-      // 1. Explicitly handle the 'clear' flag so it can actually equal null!
       final targetCategory = clearCategory
           ? null
           : (selectedCategory ?? _selectedCategoryNotifier.value);
@@ -1817,6 +1816,20 @@ class _ProductListScreenState extends State<ProductListScreen> {
       return null;
     }
 
+    final sortedOrders = List<Map<String, dynamic>>.from(orders)
+      ..sort((a, b) {
+        final aTime = DateTime.tryParse((a['created_at'] ?? '').toString());
+        final bTime = DateTime.tryParse((b['created_at'] ?? '').toString());
+        if (aTime == null && bTime == null) {
+          final aId = (a['id'] as num?)?.toInt() ?? 0;
+          final bId = (b['id'] as num?)?.toInt() ?? 0;
+          return bId.compareTo(aId);
+        }
+        if (aTime == null) return 1;
+        if (bTime == null) return -1;
+        return bTime.compareTo(aTime);
+      });
+
     return showDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) {
@@ -1826,17 +1839,18 @@ class _ProductListScreenState extends State<ProductListScreen> {
             width: 500,
             child: ListView.separated(
               shrinkWrap: true,
-              itemCount: orders.length,
+              itemCount: sortedOrders.length,
               separatorBuilder: (_, __) => const Divider(height: 1),
               itemBuilder: (context, index) {
-                final order = orders[index];
+                final order = sortedOrders[index];
                 final orderId = order['id'];
                 final customerName = order['customer_name'] ?? 'Guest';
                 final total = order['total_price'] ?? 0;
+                final orderTime = _onlineTimeLabel(order['created_at']);
                 return ListTile(
                   title: Text('Order #$orderId - $customerName'),
                   subtitle: Text(
-                    'Total: ${CurrencyFormatters.formatRupiah(total)}',
+                    'Total: ${CurrencyFormatters.formatRupiah(total)} • $orderTime',
                   ),
                   onTap: () => Navigator.of(dialogContext).pop(order),
                 );

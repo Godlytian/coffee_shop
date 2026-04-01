@@ -10,11 +10,11 @@ extension CashierControllerMethods on _ProductListScreenState {
       final rows = await supabase
           .from('orders')
           .select(
-            'id, customer_name, total_price, order_source, type, notes, cashier_id, shift_id',
+            'id, customer_name, total_price, order_source, type, notes, cashier_id, shift_id, created_at',
           )
           .eq('status', 'active')
           .neq('id', _currentActiveOrderId ?? -1)
-          .order('created_at');
+          .order('created_at', ascending: false);
 
       return (rows as List<dynamic>)
           .whereType<Map<String, dynamic>>()
@@ -915,9 +915,24 @@ extension CashierControllerMethods on _ProductListScreenState {
                   builder: (context, snapshot) {
                     final activeOrders =
                         snapshot.data ?? <Map<String, dynamic>>[];
-                    final listedOrders = List<Map<String, dynamic>>.from(
-                      activeOrders,
-                    );
+                    final listedOrders =
+                        List<Map<String, dynamic>>.from(activeOrders)
+                          ..sort((a, b) {
+                            final aTime = DateTime.tryParse(
+                              (a['created_at'] ?? '').toString(),
+                            );
+                            final bTime = DateTime.tryParse(
+                              (b['created_at'] ?? '').toString(),
+                            );
+                            if (aTime == null && bTime == null) {
+                              final aId = (a['id'] as num?)?.toInt() ?? 0;
+                              final bId = (b['id'] as num?)?.toInt() ?? 0;
+                              return bId.compareTo(aId);
+                            }
+                            if (aTime == null) return 1;
+                            if (bTime == null) return -1;
+                            return bTime.compareTo(aTime);
+                          });
 
                     if (selectedOrderId != null &&
                         listedOrders.every(
@@ -987,6 +1002,9 @@ extension CashierControllerMethods on _ProductListScreenState {
                                       ?.toString()
                                       .toUpperCase() ??
                                   '-';
+                              final orderTime = _onlineTimeLabel(
+                                order['created_at'],
+                              );
 
                               return ListTile(
                                 selected: isSelected,
@@ -1018,7 +1036,7 @@ extension CashierControllerMethods on _ProductListScreenState {
                                   ],
                                 ),
                                 subtitle: Text(
-                                  '$customerName\nTotal: ${_formatRupiah(total)} • $source',
+                                  '$customerName\nTotal: ${_formatRupiah(total)} • $source • $orderTime',
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
                                 ),

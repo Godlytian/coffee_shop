@@ -580,22 +580,40 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                         })
                         .toList(growable: false);
 
+                    final sortedFiltered =
+                        List<Map<String, dynamic>>.from(filtered)..sort((a, b) {
+                          final aTime = DateTime.tryParse(
+                            (a['created_at'] ?? '').toString(),
+                          );
+                          final bTime = DateTime.tryParse(
+                            (b['created_at'] ?? '').toString(),
+                          );
+                          if (aTime == null && bTime == null) {
+                            final aId = (a['id'] as num?)?.toInt() ?? 0;
+                            final bId = (b['id'] as num?)?.toInt() ?? 0;
+                            return bId.compareTo(aId);
+                          }
+                          if (aTime == null) return 1;
+                          if (bTime == null) return -1;
+                          return bTime.compareTo(aTime);
+                        });
+
                     if (selectedOrderId != null &&
-                        filtered.every(
+                        sortedFiltered.every(
                           (order) =>
                               (order['id'] as num?)?.toInt() != selectedOrderId,
                         )) {
-                      selectedOrderId = filtered.isEmpty
+                      selectedOrderId = sortedFiltered.isEmpty
                           ? null
-                          : (filtered.first['id'] as num?)?.toInt();
+                          : (sortedFiltered.first['id'] as num?)?.toInt();
                     }
-                    selectedOrderId ??= filtered.isEmpty
+                    selectedOrderId ??= sortedFiltered.isEmpty
                         ? null
-                        : (filtered.first['id'] as num?)?.toInt();
+                        : (sortedFiltered.first['id'] as num?)?.toInt();
 
                     final selectedOrder = selectedOrderId == null
                         ? null
-                        : filtered.firstWhere(
+                        : sortedFiltered.firstWhere(
                             (order) =>
                                 (order['id'] as num?)?.toInt() ==
                                 selectedOrderId,
@@ -662,7 +680,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                     }
 
                     final grouped = <String, List<Map<String, dynamic>>>{};
-                    for (final order in filtered) {
+                    for (final order in sortedFiltered) {
                       final label = _onlineDateLabel(order['created_at']);
                       grouped
                           .putIfAbsent(label, () => <Map<String, dynamic>>[])
@@ -717,6 +735,9 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                             (order['total_price'] as num?) ??
                                             (order['total_amount'] as num?) ??
                                             0;
+                                        final orderTime = _onlineTimeLabel(
+                                          order['created_at'],
+                                        );
                                         final isSelected =
                                             (order['id'] as num?)?.toInt() ==
                                             selectedOrderId;
@@ -738,7 +759,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                               'Order #$orderId • $customer',
                                             ),
                                             subtitle: Text(
-                                              '${status.toUpperCase()} • ${source.toUpperCase()} • ${_formatRupiah(total)}',
+                                              '${status.toUpperCase()} • ${source.toUpperCase()} • ${_formatRupiah(total)} • $orderTime',
                                             ),
                                             trailing: const Icon(
                                               Icons.chevron_right,
