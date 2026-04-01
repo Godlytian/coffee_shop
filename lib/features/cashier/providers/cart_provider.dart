@@ -26,6 +26,7 @@ class CartProvider extends ChangeNotifier {
   DateTime? _lastSuccessfulSyncAt;
   int _syncTotalItems = 0;
   int _syncProcessedItems = 0;
+  double _totalAmount = 0.0;
 
   CartProvider() {
     _bootstrapOffline();
@@ -558,14 +559,7 @@ class CartProvider extends ChangeNotifier {
     }
   }
 
-  double get totalAmount {
-    var total = 0.0;
-    _items.forEach((_, item) {
-      final lineUnitPrice = item.price + _modifierUnitPrice(item);
-      total += lineUnitPrice * item.quantity;
-    });
-    return total;
-  }
+  double get totalAmount => _totalAmount;
 
   double _modifierUnitPrice(CartItem item) {
     final data = item.modifiersData;
@@ -591,6 +585,14 @@ class CartProvider extends ChangeNotifier {
 
   double _lineUnitPrice(CartItem item) {
     return item.price + _modifierUnitPrice(item);
+  }
+
+  void _recalculateTotalAmount() {
+    var total = 0.0;
+    _items.forEach((_, item) {
+      total += _lineUnitPrice(item) * item.quantity;
+    });
+    _totalAmount = total;
   }
 
   void addItem(
@@ -626,6 +628,7 @@ class CartProvider extends ChangeNotifier {
       );
     }
 
+    _recalculateTotalAmount();
     notifyListeners();
   }
 
@@ -661,11 +664,13 @@ class CartProvider extends ChangeNotifier {
       );
     }
 
+    _recalculateTotalAmount();
     notifyListeners();
   }
 
   void removeItem(String key) {
     _items.remove(key);
+    _recalculateTotalAmount();
     notifyListeners();
   }
 
@@ -1170,6 +1175,7 @@ class CartProvider extends ChangeNotifier {
 
   void clearCart() {
     _items.clear();
+    _totalAmount = 0;
     notifyListeners();
   }
 }

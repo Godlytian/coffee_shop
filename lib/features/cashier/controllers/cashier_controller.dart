@@ -328,7 +328,7 @@ extension CashierControllerMethods on _ProductListScreenState {
         );
 
         final rows = await _fetchOrderItemRows(_currentActiveOrderId!);
-        final selectedIds = _matchSelectedOrderItemIds(
+        final selectedIds = await _matchSelectedOrderItemIds(
           rows: rows,
           selectedItems: selectedEntries.values,
         );
@@ -544,7 +544,7 @@ extension CashierControllerMethods on _ProductListScreenState {
       }
 
       final rows = await _fetchOrderItemRows(sourceOrderId);
-      final selectedIds = _matchSelectedOrderItemIds(
+      final selectedIds = await _matchSelectedOrderItemIds(
         rows: rows,
         selectedItems: selectedEntries.values,
       );

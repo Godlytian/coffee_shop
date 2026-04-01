@@ -38,6 +38,72 @@ part '../../data/cashier_repository.dart';
 part '../../data/product_catalog_repository.dart';
 part '../../../online_orders/data/online_orders_repository.dart';
 
+Map<String, dynamic> _buildMenuProjectionPayload(Map<String, dynamic> payload) {
+  final products = (payload['products'] as List<dynamic>? ?? <dynamic>[])
+      .whereType<Map<String, dynamic>>()
+      .toList(growable: false);
+  final hiddenCategories =
+      (payload['hiddenCategories'] as List<dynamic>? ?? <dynamic>[])
+          .map((item) => item.toString())
+          .toSet();
+  final selectedCategory = payload['selectedCategory'] as String?;
+
+  final visibleProducts = products
+      .where((product) => !hiddenCategories.contains(product['category']))
+      .toList(growable: false);
+  final categories =
+      visibleProducts
+          .map((product) => product['category']?.toString() ?? '')
+          .where((category) => category.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort();
+  final effectiveSelectedCategory = categories.contains(selectedCategory)
+      ? selectedCategory
+      : null;
+  final filteredProducts = effectiveSelectedCategory == null
+      ? visibleProducts
+      : visibleProducts
+            .where(
+              (product) =>
+                  product['category']?.toString() == effectiveSelectedCategory,
+            )
+            .toList(growable: false);
+
+  return {
+    'visibleProducts': visibleProducts,
+    'categories': categories,
+    'effectiveSelectedCategory': effectiveSelectedCategory,
+    'filteredProducts': filteredProducts,
+  };
+}
+
+List<int> _matchSelectedOrderItemIdsWorker(Map<String, dynamic> payload) {
+  final rows = (payload['rows'] as List<dynamic>? ?? <dynamic>[])
+      .whereType<Map<String, dynamic>>();
+  final selectedSignatures =
+      (payload['selectedSignatures'] as List<dynamic>? ?? <dynamic>[])
+          .map((item) => item.toString())
+          .toList(growable: false);
+  final rowBuckets = <String, List<int>>{};
+
+  for (final row in rows) {
+    final rowId = (row['id'] as num?)?.toInt();
+    if (rowId == null) continue;
+    final signature = row['signature']?.toString();
+    if (signature == null) continue;
+    rowBuckets.putIfAbsent(signature, () => <int>[]).add(rowId);
+  }
+
+  final matchedIds = <int>[];
+  for (final signature in selectedSignatures) {
+    final bucket = rowBuckets[signature];
+    if (bucket == null || bucket.isEmpty) continue;
+    matchedIds.add(bucket.removeAt(0));
+  }
+  return matchedIds;
+}
+
 class ProductListScreen extends StatefulWidget {
   const ProductListScreen({super.key});
 
@@ -45,10 +111,14 @@ class ProductListScreen extends StatefulWidget {
   State<ProductListScreen> createState() => _ProductListScreenState();
 }
 
+final ValueNotifier<List<Product>> _filteredProductsNotifier =
+    ValueNotifier<List<Product>>(const <Product>[]);
+
 class _ProductListScreenState extends State<ProductListScreen> {
   late Future<List<Product>> _future;
 
-  String? _selectedCategory;
+  final ValueNotifier<String?> _selectedCategoryNotifier =
+      ValueNotifier<String?>(null);
   final Set<String> _hiddenMenuCategories = <String>{};
   String _menuLayout = 'grid_4';
   String _orderType = 'dine_in';
@@ -77,7 +147,13 @@ class _ProductListScreenState extends State<ProductListScreen> {
   CartProvider? _cartProviderSubscription;
   bool _lastKnownOnlineReachable = false;
   bool _isRefreshingAppData = false;
-  bool _isCartExpanded = false;
+  final ValueNotifier<bool> _isCartExpandedNotifier = ValueNotifier<bool>(
+    false,
+  );
+  bool _isMenuProjectionUpdating = false;
+  List<Product> _allProductsCache = const <Product>[];
+  List<Product> _filteredProductsCache = const <Product>[];
+  List<String> _menuCategoriesCache = const <String>[];
   final List<_SplitBoardItem> _unassignedSplitItems = <_SplitBoardItem>[];
   final List<_SplitGroup> _splitGroups = <_SplitGroup>[];
   String? _selectedSplitItemId;
@@ -118,7 +194,12 @@ class _ProductListScreenState extends State<ProductListScreen> {
     LocalOrderStoreRepository.instance.init();
     OrderSyncService.instance.start();
     unawaited(_loadCourierSettings());
-    unawaited(_primeOfflineCachesOnFirstOpen());
+    unawaited(
+      Future<void>.delayed(
+        const Duration(seconds: 3),
+        _primeOfflineCachesOnFirstOpen,
+      ),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncShiftContext();
     });
@@ -154,9 +235,49 @@ class _ProductListScreenState extends State<ProductListScreen> {
     _cartProviderSubscription?.removeListener(_handleConnectionStateChange);
     _onlineOrderBadgeSubscription?.cancel();
     _onlinePaidOrdersCountNotifier.dispose();
+    _selectedCategoryNotifier.dispose();
+    _isCartExpandedNotifier.dispose();
     _snackbarAnimationController?.dispose();
     _snackbarOverlayEntry?.remove();
+    _filteredProductsNotifier.dispose();
     super.dispose();
+  }
+
+  bool get _isCartExpanded => _isCartExpandedNotifier.value;
+
+  Future<void> _refreshMenuProjection({
+    String? selectedCategory,
+    bool clearCategory = false,
+  }) async {
+    if (_isMenuProjectionUpdating || _allProductsCache.isEmpty) return;
+    _isMenuProjectionUpdating = true;
+    try {
+      // 1. Explicitly handle the 'clear' flag so it can actually equal null!
+      final targetCategory = clearCategory
+          ? null
+          : (selectedCategory ?? _selectedCategoryNotifier.value);
+
+      final payload = {
+        'products': _allProductsCache
+            .map((product) => product.toJson())
+            .toList(),
+        'hiddenCategories': _hiddenMenuCategories.toList(growable: false),
+        'selectedCategory': targetCategory,
+      };
+      final result = await compute(_buildMenuProjectionPayload, payload);
+      if (!mounted) return;
+      _menuCategoriesCache = (result['categories'] as List<dynamic>)
+          .cast<String>();
+      _filteredProductsNotifier.value =
+          (result['filteredProducts'] as List<dynamic>)
+              .whereType<Map<String, dynamic>>()
+              .map(Product.fromJson)
+              .toList(growable: false);
+      _selectedCategoryNotifier.value =
+          result['effectiveSelectedCategory'] as String?;
+    } finally {
+      _isMenuProjectionUpdating = false;
+    }
   }
 
   void _startOnlineOrderBadgeListener() {
@@ -231,10 +352,14 @@ class _ProductListScreenState extends State<ProductListScreen> {
     } catch (_) {}
 
     try {
+      final sevenDaysAgo = DateTime.now()
+          .subtract(const Duration(days: 7))
+          .toIso8601String();
       final ordersData = await supabase
           .from('orders')
           .select()
           .isFilter('deleted_at', null)
+          .gte('created_at', sevenDaysAgo)
           .order('created_at', ascending: false);
 
       final orders = (ordersData as List<dynamic>)
@@ -247,13 +372,18 @@ class _ProductListScreenState extends State<ProductListScreen> {
       print('Error priming orders: $e');
     }
 
+    final sevenDaysAgo = DateTime.now()
+        .subtract(const Duration(days: 7))
+        .toIso8601String();
+
     try {
       final orderItemsData = await supabase
           .from('order_items')
           .select(
             'order_id, quantity, product_id, modifiers, products(*), orders!inner(deleted_at)',
           )
-          .isFilter('orders.deleted_at', null);
+          .isFilter('orders.deleted_at', null)
+          .gte('orders.created_at', sevenDaysAgo);
 
       final rows = (orderItemsData as List<dynamic>)
           .whereType<Map>()
@@ -307,240 +437,264 @@ class _ProductListScreenState extends State<ProductListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    const panelAnimationDuration = Duration(milliseconds: 260);
     const panelFadeDuration = Duration(milliseconds: 80);
-    final dividerWidth = _isCartExpanded ? 0.0 : 36.0;
-    final totalFlexWidth = max(
-      MediaQuery.sizeOf(context).width - dividerWidth,
-      0.0,
-    );
-    final menuColumnWidth = _isCartExpanded ? 0.0 : totalFlexWidth * (4 / 6);
-    final cartColumnWidth = _isCartExpanded
-        ? totalFlexWidth
-        : totalFlexWidth * (2 / 6);
+    const panelAnimationDuration = Duration(milliseconds: 260);
 
     return Scaffold(
       appBar: _buildCashierAppBar(),
-      body: Row(
-        children: [
-          AnimatedContainer(
-            duration: panelAnimationDuration,
-            curve: Curves.easeOutCubic,
-            width: menuColumnWidth,
-            child: menuColumnWidth <= 0
-                ? const SizedBox.shrink()
-                : RepaintBoundary(
-                    child: AnimatedOpacity(
-                      duration: panelFadeDuration,
-                      curve: Curves.easeOutCubic,
-                      opacity: _isCartExpanded ? 0 : 1,
-                      child: Column(
-                        children: [
-                          _buildColumnHeader(
-                            title: 'Menu List',
-                            trailing: PopupMenuButton<String>(
-                              tooltip: 'Menu settings',
-                              icon: const Icon(Icons.more_vert),
-                              itemBuilder: (context) => const [
-                                PopupMenuItem(
-                                  value: 'refresh',
-                                  child: Text('Refresh menu'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'view_settings',
-                                  child: Text('View settings'),
-                                ),
-                              ],
-                              onSelected: (value) async {
-                                if (value == 'refresh') {
-                                  setState(() => _future = _loadProducts());
-                                } else if (value == 'view_settings') {
-                                  await _showMenuViewSettingsDialog();
-                                }
-                              },
-                            ),
-                          ),
-                          Expanded(
-                            child: Container(
-                              color: Colors.grey[100],
-                              child: FutureBuilder<List<Product>>(
-                                future: _future,
-                                builder: (context, snapshot) {
-                                  if (snapshot.connectionState ==
-                                      ConnectionState.waiting) {
-                                    return const Center(
-                                      child: CircularProgressIndicator(),
-                                    );
-                                  }
-                                  if (snapshot.hasError) {
-                                    final errorText = snapshot.error.toString();
-                                    final isPolicyError =
-                                        errorText.contains(
-                                          'row-level security',
-                                        ) ||
-                                        errorText.contains(
-                                          'permission denied',
-                                        ) ||
-                                        errorText.contains('not authorized') ||
-                                        errorText.contains('42501');
+      body: ValueListenableBuilder<bool>(
+        valueListenable: _isCartExpandedNotifier,
+        builder: (context, isCartExpanded, child) {
+          final dividerWidth = isCartExpanded ? 0.0 : 36.0;
+          final totalFlexWidth = max(
+            MediaQuery.sizeOf(context).width - dividerWidth,
+            0.0,
+          );
+          final menuColumnWidth = isCartExpanded
+              ? 0.0
+              : totalFlexWidth * (4 / 6);
+          final cartColumnWidth = isCartExpanded
+              ? totalFlexWidth
+              : totalFlexWidth * (2 / 6);
 
-                                    return Center(
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(24),
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Icon(
-                                              Icons.lock_outline,
-                                              size: 40,
-                                              color: Colors.orange,
-                                            ),
-                                            const SizedBox(height: 12),
-                                            Text(
-                                              isPolicyError
-                                                  ? 'Data cannot be read because Supabase Row Level Security policy blocks this client.'
-                                                  : 'Error loading menu data.',
-                                              textAlign: TextAlign.center,
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Text(
-                                              isPolicyError
-                                                  ? 'Fix by updating Supabase RLS SELECT policies so this app client is allowed to read products/orders.'
-                                                  : errorText,
-                                              textAlign: TextAlign.center,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                  if (!snapshot.hasData ||
-                                      snapshot.data!.isEmpty) {
-                                    return const Center(
-                                      child: Text('No products found!'),
-                                    );
-                                  }
-
-                                  final products = snapshot.data!;
-                                  final visibleProducts = products
-                                      .where(
-                                        (product) => !_hiddenMenuCategories
-                                            .contains(product.category),
-                                      )
-                                      .toList(growable: false);
-                                  final categories =
-                                      visibleProducts
-                                          .map((product) => product.category)
-                                          .toSet()
-                                          .toList()
-                                        ..sort();
-                                  final effectiveSelectedCategory =
-                                      categories.contains(_selectedCategory)
-                                      ? _selectedCategory
-                                      : null;
-                                  final filteredProducts =
-                                      effectiveSelectedCategory == null
-                                      ? visibleProducts
-                                      : visibleProducts
-                                            .where(
-                                              (product) =>
-                                                  product.category ==
-                                                  effectiveSelectedCategory,
-                                            )
-                                            .toList(growable: false);
-
-                                  return Column(
-                                    children: [
-                                      Expanded(
-                                        child: _buildMenuLayoutContent(
-                                          filteredProducts,
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        height: 56,
-                                        child: ListView(
-                                          scrollDirection: Axis.horizontal,
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 12,
-                                          ),
-                                          children: [
-                                            Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 4,
-                                                    vertical: 8,
-                                                  ),
-                                              child: ChoiceChip(
-                                                label: const Text('All'),
-                                                selected:
-                                                    effectiveSelectedCategory ==
-                                                    null,
-                                                onSelected: (_) => setState(
-                                                  () =>
-                                                      _selectedCategory = null,
-                                                ),
-                                              ),
-                                            ),
-                                            ...categories.map(
-                                              (category) => Padding(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 4,
-                                                      vertical: 8,
-                                                    ),
-                                                child: ChoiceChip(
-                                                  label: Text(category),
-                                                  selected:
-                                                      effectiveSelectedCategory ==
-                                                      category,
-                                                  onSelected: (_) => setState(
-                                                    () => _selectedCategory =
-                                                        category,
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  );
-                                },
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-          ),
-          AnimatedContainer(
-            duration: panelAnimationDuration,
-            curve: Curves.easeOutCubic,
-            width: dividerWidth,
-            child: dividerWidth <= 0
-                ? const SizedBox.shrink()
-                : _buildMenuCartDivider(),
-          ),
-          AnimatedContainer(
-            duration: panelAnimationDuration,
-            curve: Curves.easeOutCubic,
-            width: cartColumnWidth,
-            child: RepaintBoundary(
-              child: AnimatedOpacity(
-                duration: panelFadeDuration,
+          return Row(
+            children: [
+              // 1. First column changed back to AnimatedContainer
+              AnimatedContainer(
+                duration: panelAnimationDuration,
                 curve: Curves.easeOutCubic,
-                opacity: _isCartExpanded ? 1 : 0.96,
-                child: _isCartExpanded
-                    ? _buildSplitBoardBody()
-                    : _buildRegularCartBody(),
+                width: menuColumnWidth,
+                child: menuColumnWidth <= 0
+                    ? const SizedBox.shrink()
+                    : RepaintBoundary(
+                        child: AnimatedOpacity(
+                          duration: panelFadeDuration,
+                          curve: Curves.easeOutCubic,
+                          opacity: isCartExpanded ? 0 : 1,
+                          child: Column(
+                            children: [
+                              _buildColumnHeader(
+                                title: 'Menu List',
+                                trailing: PopupMenuButton<String>(
+                                  tooltip: 'Menu settings',
+                                  icon: const Icon(Icons.more_vert),
+                                  itemBuilder: (context) => const [
+                                    PopupMenuItem(
+                                      value: 'refresh',
+                                      child: Text('Refresh menu'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'view_settings',
+                                      child: Text('View settings'),
+                                    ),
+                                  ],
+                                  onSelected: (value) async {
+                                    if (value == 'refresh') {
+                                      setState(() => _future = _loadProducts());
+                                    } else if (value == 'view_settings') {
+                                      await _showMenuViewSettingsDialog();
+                                    }
+                                  },
+                                ),
+                              ),
+                              Expanded(
+                                child: Container(
+                                  color: Colors.grey[100],
+                                  child: FutureBuilder<List<Product>>(
+                                    future: _future,
+                                    builder: (context, snapshot) {
+                                      if (snapshot.connectionState ==
+                                          ConnectionState.waiting) {
+                                        return const Center(
+                                          child: CircularProgressIndicator(),
+                                        );
+                                      }
+                                      if (snapshot.hasError) {
+                                        final errorText = snapshot.error
+                                            .toString();
+                                        final isPolicyError =
+                                            errorText.contains(
+                                              'row-level security',
+                                            ) ||
+                                            errorText.contains(
+                                              'permission denied',
+                                            ) ||
+                                            errorText.contains(
+                                              'not authorized',
+                                            ) ||
+                                            errorText.contains('42501');
+
+                                        return Center(
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(24),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(
+                                                  Icons.lock_outline,
+                                                  size: 40,
+                                                  color: Colors.orange,
+                                                ),
+                                                const SizedBox(height: 12),
+                                                Text(
+                                                  isPolicyError
+                                                      ? 'Data cannot be read because Supabase Row Level Security policy blocks this client.'
+                                                      : 'Error loading menu data.',
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 8),
+                                                Text(
+                                                  isPolicyError
+                                                      ? 'Fix by updating Supabase RLS SELECT policies so this app client is allowed to read products/orders.'
+                                                      : errorText,
+                                                  textAlign: TextAlign.center,
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                      if (!snapshot.hasData ||
+                                          snapshot.data!.isEmpty) {
+                                        return const Center(
+                                          child: Text('No products found!'),
+                                        );
+                                      }
+
+                                      final products = snapshot.data!;
+                                      if (!listEquals(
+                                        _allProductsCache,
+                                        products,
+                                      )) {
+                                        _allProductsCache = products;
+                                        unawaited(_refreshMenuProjection());
+                                      }
+
+                                      return ValueListenableBuilder<String?>(
+                                        valueListenable:
+                                            _selectedCategoryNotifier,
+                                        builder: (context, selectedCategory, _) {
+                                          return ValueListenableBuilder<
+                                            List<Product>
+                                          >(
+                                            valueListenable:
+                                                _filteredProductsNotifier,
+                                            builder: (context, filteredProducts, _) {
+                                              return Column(
+                                                children: [
+                                                  Expanded(
+                                                    child:
+                                                        _buildMenuLayoutContent(
+                                                          filteredProducts,
+                                                        ),
+                                                  ),
+                                                  SizedBox(
+                                                    height: 56,
+                                                    child: ListView(
+                                                      scrollDirection:
+                                                          Axis.horizontal,
+                                                      padding:
+                                                          const EdgeInsets.symmetric(
+                                                            horizontal: 12,
+                                                          ),
+                                                      children: [
+                                                        Padding(
+                                                          padding:
+                                                              const EdgeInsets.symmetric(
+                                                                horizontal: 4,
+                                                                vertical: 8,
+                                                              ),
+                                                          child: ChoiceChip(
+                                                            label: const Text(
+                                                              'All',
+                                                            ),
+                                                            selected:
+                                                                selectedCategory ==
+                                                                null,
+                                                            onSelected: (_) {
+                                                              unawaited(
+                                                                _refreshMenuProjection(
+                                                                  clearCategory:
+                                                                      true,
+                                                                ),
+                                                              );
+                                                            },
+                                                          ),
+                                                        ),
+                                                        ..._menuCategoriesCache.map(
+                                                          (category) => Padding(
+                                                            padding:
+                                                                const EdgeInsets.symmetric(
+                                                                  horizontal: 4,
+                                                                  vertical: 8,
+                                                                ),
+                                                            child: ChoiceChip(
+                                                              label: Text(
+                                                                category,
+                                                              ),
+                                                              selected:
+                                                                  selectedCategory ==
+                                                                  category,
+                                                              onSelected: (_) {
+                                                                unawaited(
+                                                                  _refreshMenuProjection(
+                                                                    selectedCategory:
+                                                                        category,
+                                                                  ),
+                                                                );
+                                                              },
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              );
+                                            },
+                                          );
+                                        },
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
               ),
-            ),
-          ),
-        ],
+              // 2. Divider column changed back to AnimatedContainer
+              AnimatedContainer(
+                duration: panelAnimationDuration,
+                curve: Curves.easeOutCubic,
+                width: dividerWidth,
+                child: dividerWidth <= 0
+                    ? const SizedBox.shrink()
+                    : _buildMenuCartDivider(),
+              ),
+              // 3. Cart column changed back to AnimatedContainer
+              AnimatedContainer(
+                duration: panelAnimationDuration,
+                curve: Curves.easeOutCubic,
+                width: cartColumnWidth,
+                child: RepaintBoundary(
+                  child: AnimatedOpacity(
+                    duration: panelFadeDuration,
+                    curve: Curves.easeOutCubic,
+                    opacity: isCartExpanded ? 1 : 0.96,
+                    child: isCartExpanded
+                        ? _buildSplitBoardBody()
+                        : _buildRegularCartBody(),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -871,11 +1025,9 @@ class _ProductListScreenState extends State<ProductListScreen> {
   }
 
   void _toggleCartExpanded() {
-    final shouldExpand = !_isCartExpanded;
-    setState(() {
-      _isCartExpanded = shouldExpand;
-      _resetSplitBoardState();
-    });
+    final shouldExpand = !_isCartExpandedNotifier.value;
+    _isCartExpandedNotifier.value = shouldExpand;
+    _resetSplitBoardState();
 
     if (!shouldExpand) return;
     final cart = context.read<CartProvider>();
@@ -1616,11 +1768,8 @@ class _ProductListScreenState extends State<ProductListScreen> {
                     ..clear()
                     ..addAll(tempHiddenCategories);
                   _menuLayout = tempLayout;
-                  if (_selectedCategory != null &&
-                      _hiddenMenuCategories.contains(_selectedCategory)) {
-                    _selectedCategory = null;
-                  }
                 });
+                unawaited(_refreshMenuProjection());
                 Navigator.of(dialogContext).pop();
               },
               child: const Text('Apply'),
@@ -1732,34 +1881,22 @@ class _ProductListScreenState extends State<ProductListScreen> {
     return value;
   }
 
-  List<int> _matchSelectedOrderItemIds({
+  Future<List<int>> _matchSelectedOrderItemIds({
     required List<Map<String, dynamic>> rows,
     required Iterable<CartItem> selectedItems,
-  }) {
-    final rowBuckets = <String, List<int>>{};
-
-    for (final row in rows) {
-      final rowId = (row['id'] as num?)?.toInt();
-      if (rowId == null) {
-        continue;
-      }
-
-      final signature = _orderItemRowSignature(row);
-      rowBuckets.putIfAbsent(signature, () => <int>[]).add(rowId);
-    }
-
-    final matchedIds = <int>[];
-    for (final item in selectedItems) {
-      final signature = _selectedCartItemSignature(item);
-      final bucket = rowBuckets[signature];
-      if (bucket == null || bucket.isEmpty) {
-        continue;
-      }
-
-      matchedIds.add(bucket.removeAt(0));
-    }
-
-    return matchedIds;
+  }) async {
+    final rowPayload = rows
+        .map(
+          (row) => {'id': row['id'], 'signature': _orderItemRowSignature(row)},
+        )
+        .toList(growable: false);
+    final selectedSignatures = selectedItems
+        .map(_selectedCartItemSignature)
+        .toList(growable: false);
+    return compute(_matchSelectedOrderItemIdsWorker, {
+      'rows': rowPayload,
+      'selectedSignatures': selectedSignatures,
+    });
   }
 
   num _normalizeNum(num value) {
