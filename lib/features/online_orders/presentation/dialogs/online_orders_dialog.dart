@@ -371,7 +371,6 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
 
     final startedAt = shift['started_at'];
     final endedAt = shift['ended_at'];
-    final cashierName = shift['current_cashier_id']?.toString() ?? '-';
     final cashTotal = orders.fold<num>(0, (sum, order) {
       final method = (order['payment_method'] ?? '').toString().toLowerCase();
       if (method != 'cash') return sum;

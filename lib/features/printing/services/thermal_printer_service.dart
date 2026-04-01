@@ -12,12 +12,6 @@ class ThermalPrinterService {
 
   String _formatPrice(num value) => CurrencyFormatters.formatRupiah(value);
 
-  String _truncateForPaper(String value, {int maxChars = 20}) {
-    final clean = value.trim();
-    if (clean.length <= maxChars) return clean;
-    return '${clean.substring(0, maxChars - 1)}…';
-  }
-
   Future<List<BluetoothDevice>> getBondedDevices() async {
     try {
       final devices = await _printer.getBondedDevices().timeout(
@@ -76,20 +70,18 @@ class ThermalPrinterService {
     required num change,
     String? customerName,
     String? tableName,
-    String? orderType, // Added Order Type
+    String? orderType,
   }) async {
     if (!(await isConnected)) {
       throw Exception('Printer not connected');
     }
 
-    // Get last 3 digits of order ID (or pad with zeros if it's less than 3 digits)
     final orderIdStr = orderId.toString();
     final shortOrderId = orderIdStr.length >= 3
         ? orderIdStr.substring(orderIdStr.length - 3)
         : orderIdStr.padLeft(3, '0');
 
     await _printer.printNewLine();
-    // 2 = Size, 1 = Center align
     await _printer.printCustom('ULUN', 2, 1);
     await _printer.printCustom('ORDER #$shortOrderId', 1, 1);
     await _printer.printCustom(
@@ -99,7 +91,6 @@ class ThermalPrinterService {
     );
     await _printer.printCustom('--------------------------------', 1, 1);
 
-    // Print customer info only if provided
     if (customerName != null && customerName.trim().isNotEmpty) {
       await _printer.printCustom('Customer: $customerName', 1, 0);
     }
@@ -113,16 +104,18 @@ class ThermalPrinterService {
     await _printer.printNewLine();
     await _printer.printCustom('Item(s):', 1, 0);
 
-    // Loop through order items
     for (final line in lines) {
       final name = line['name']?.toString() ?? '-';
       final qty = (line['qty'] as num?)?.toInt() ?? 1;
+
       final subtotal = (line['subtotal'] as num?) ?? 0;
+      final price = (line['price'] as num?) ?? (qty > 0 ? subtotal / qty : 0);
 
-      // printLeftRight puts the item name and price perfectly on opposite sides
-      await _printer.printLeftRight('$qty $name', _formatPrice(subtotal), 1);
+      await _printer.printCustom(name, 1, 0);
 
-      // Handle Add-ons if they exist in your data structure
+      final leftSide = ' └─ $qty x ${_formatPrice(price)}';
+      await _printer.printLeftRight(leftSide, _formatPrice(subtotal), 1);
+
       if (line['addons'] != null) {
         final addons = line['addons'] as List<dynamic>;
         for (final addonObj in addons) {
@@ -130,15 +123,16 @@ class ThermalPrinterService {
           final addonName = addon['name']?.toString() ?? 'Add-on';
           final addonPrice = (addon['price'] as num?) ?? 0;
 
+          final addonLeft = '    +$addonName';
+
           if (addonPrice > 0) {
             await _printer.printLeftRight(
-              '  -$addonName',
+              addonLeft,
               _formatPrice(addonPrice),
               1,
             );
           } else {
-            // If add-on is free, just print the name
-            await _printer.printCustom('  -$addonName', 1, 0);
+            await _printer.printCustom(addonLeft, 1, 0);
           }
         }
       }
@@ -146,7 +140,6 @@ class ThermalPrinterService {
 
     await _printer.printCustom('--------------------------------', 1, 1);
 
-    // Totals and Payments
     await _printer.printLeftRight('Total:', _formatPrice(total), 1);
     await _printer.printLeftRight(
       'Payment Method:',
@@ -154,15 +147,14 @@ class ThermalPrinterService {
       1,
     );
 
-    // Hide Paid and Change lines if the payment is QRIS
     if (paymentMethod.toLowerCase() != 'qris') {
       await _printer.printLeftRight('Paid:', _formatPrice(paid), 1);
       await _printer.printLeftRight('Change:', _formatPrice(change), 1);
     }
 
-    // Footer
     await _printer.printNewLine();
     await _printer.printCustom('Thank You', 1, 1);
+    await _printer.printNewLine();
     await _printer.printCustom('Wifi: CAFEULUN', 1, 1);
     await _printer.printCustom('Password: punyaulun', 1, 1);
 
@@ -209,21 +201,26 @@ class ThermalPrinterService {
       final name = item['name']?.toString() ?? '-';
       final qty = (item['qty'] as num?)?.toInt() ?? 1;
       final subtotal = (item['subtotal'] as num?) ?? 0;
-      final compactLabel = '$qty ${_truncateForPaper(name)}';
 
-      await _printer.printLeftRight(compactLabel, _formatPrice(subtotal), 1);
+      await _printer.printCustom('$qty $name', 1, 0);
+
+      await _printer.printLeftRight('  ->', _formatPrice(subtotal), 1);
+
       if (item['addons'] != null) {
         final addons = item['addons'] as List<dynamic>;
         for (final addonObj in addons) {
           final addon = addonObj as Map<String, dynamic>;
           final addonName = addon['name']?.toString() ?? 'Add-on';
           final addonPrice = (addon['price'] as num?) ?? 0;
+
           if (addonPrice > 0) {
             await _printer.printLeftRight(
-              '  +$addonName',
+              '    +$addonName',
               _formatPrice(addonPrice),
               1,
             );
+          } else {
+            await _printer.printCustom('    +$addonName', 1, 0);
           }
         }
       }
@@ -239,7 +236,6 @@ class ThermalPrinterService {
     await _printer.paperCut();
   }
 
-  /// Print a simple test receipt
   Future<void> printTestReceipt({required String printerName}) async {
     if (!(await isConnected)) {
       throw Exception('Printer not connected');
