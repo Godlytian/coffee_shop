@@ -1438,6 +1438,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
               parentOrderId: _pendingParentOrderIdForNextSubmit,
               cashierId: _activeCashierId,
               shiftId: _activeShiftId,
+              shouldClearCart: false,
             );
 
       if (!mounted) return;
@@ -1459,6 +1460,11 @@ class _ProductListScreenState extends State<ProductListScreen> {
   }
 
   Future<void> _handlePayCartOrder(CartProvider cart) async {
+    if (cart.items.isEmpty) {
+      _showDropdownSnackbar('Cart is empty. Add item first.', isError: true);
+      return;
+    }
+
     if ((_customerName ?? '').trim().isEmpty) {
       _showDropdownSnackbar('Enter customer name first.', isError: true);
       await _showOfflineOrderDetailModal();

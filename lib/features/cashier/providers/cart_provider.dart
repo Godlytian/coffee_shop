@@ -903,6 +903,20 @@ class CartProvider extends ChangeNotifier {
     final existingOrderSource = existingOrder['order_source']?.toString();
 
     final localOrderItems = _buildOfflineOrderItemCacheRows(orderId);
+    final hasCartItems = _items.isNotEmpty;
+    final orderItemsPayload = hasCartItems
+        ? _items.values
+              .map((item) {
+                return {
+                  'order_id': orderId,
+                  'product_id': item.id,
+                  'quantity': item.quantity,
+                  'price_at_time': _lineUnitPrice(item),
+                  'modifiers': _serializeItemModifiers(item),
+                };
+              })
+              .toList(growable: false)
+        : const <Map<String, dynamic>>[];
     final localOrderPayload = {
       'id': orderId,
       'total_price': normalizedTotal,
@@ -944,37 +958,28 @@ class CartProvider extends ChangeNotifier {
           })
           .eq('id', orderId);
 
-      await supabase.from('order_items').delete().eq('order_id', orderId);
-
-      if (_items.isNotEmpty) {
-        final orderItems = _items.values.map((item) {
-          return {
-            'order_id': orderId,
-            'product_id': item.id,
-            'quantity': item.quantity,
-            'price_at_time': _lineUnitPrice(item),
-            'modifiers': _serializeItemModifiers(item),
-          };
-        }).toList();
-
-        await supabase.from('order_items').insert(orderItems);
+      if (hasCartItems) {
+        await supabase.from('order_items').delete().eq('order_id', orderId);
+        await supabase.from('order_items').insert(orderItemsPayload);
       }
-    } catch (_) {
-      // offline fallback: keep local flow functional.
-    }
+    } catch (_) {}
 
     await LocalOrderStoreRepository.instance.upsertOrder(
       Map<String, dynamic>.from(localOrderPayload),
     );
-    await LocalOrderItemStoreRepository.instance.replaceForOrder(
-      orderId: orderId,
-      rows: localOrderItems,
-    );
-    await _updateQueuedOrderEventIfExists(
-      orderId: orderId,
-      latestOrder: Map<String, dynamic>.from(localOrderPayload),
-      latestItems: _buildOrderItemPayloadRows(orderId),
-    );
+    if (hasCartItems) {
+      await LocalOrderItemStoreRepository.instance.replaceForOrder(
+        orderId: orderId,
+        rows: localOrderItems,
+      );
+    }
+    if (hasCartItems) {
+      await _updateQueuedOrderEventIfExists(
+        orderId: orderId,
+        latestOrder: Map<String, dynamic>.from(localOrderPayload),
+        latestItems: _buildOrderItemPayloadRows(orderId),
+      );
+    }
 
     return orderId;
   }
@@ -990,6 +995,7 @@ class CartProvider extends ChangeNotifier {
     int? parentOrderId,
     int? cashierId,
     int? shiftId,
+    bool shouldClearCart = true,
   }) async {
     final supabase = Supabase.instance.client;
     final normalizedTotal = totalAmount % 1 == 0
@@ -1093,7 +1099,9 @@ class CartProvider extends ChangeNotifier {
         rows: localOrderItems,
       );
 
-      clearCart();
+      if (shouldClearCart) {
+        clearCart();
+      }
       return orderId;
     } catch (_) {
       if (orderPayload == null) {
@@ -1162,7 +1170,9 @@ class CartProvider extends ChangeNotifier {
       );
       await _refreshOfflineCounters();
       notifyListeners();
-      clearCart();
+      if (shouldClearCart) {
+        clearCart();
+      }
       return -1;
     }
   }
