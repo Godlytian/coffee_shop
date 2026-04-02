@@ -934,7 +934,9 @@ class CartProvider extends ChangeNotifier {
           ? null
           : 'Table: $tableName',
       'order_source': existingOrderSource ?? 'cashier',
-      'created_at': DateTime.now().toIso8601String(),
+      'created_at':
+          existingOrder['created_at']?.toString() ??
+          DateTime.now().toIso8601String(),
     };
 
     try {
