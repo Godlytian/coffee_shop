@@ -570,17 +570,49 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     }());
   }
 
-  Future<void> _showAllOrdersDialog() async {
+  Future<bool> _showDeleteConfirmationDialog({
+    required String title,
+    required String message,
+  }) async {
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (confirmContext) {
+            return AlertDialog(
+              title: Text(title),
+              content: Text(message),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(confirmContext).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(confirmContext).pop(true),
+                  child: const Text('Delete'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+    return confirmed;
+  }
+
+  Future<void> _showAllOrdersDialog({
+    String initialTab = 'orders',
+    int? initialShiftId,
+  }) async {
     String searchQuery = '';
     String selectedStatus = 'all';
-    String selectedTab = 'orders';
+    String selectedTab = initialTab;
     int? selectedOrderId;
-    int? selectedShiftId;
+    int? selectedShiftId = initialShiftId;
 
     final offlinePending = await context
         .read<CartProvider>()
         .getPendingOfflineOrders();
-    final shiftRowsFuture = _fetchShiftRowsForReport();
+    Future<List<Map<String, dynamic>>> shiftRowsFuture =
+        _fetchShiftRowsForReport();
 
     await showDialog<void>(
       context: context,
@@ -910,46 +942,12 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                 OutlinedButton.icon(
                                                   onPressed: () async {
                                                     final confirmed =
-                                                        await showDialog<bool>(
-                                                          context: context,
-                                                          builder: (confirmContext) {
-                                                            return AlertDialog(
-                                                              title: const Text(
-                                                                'Delete order?',
-                                                              ),
-                                                              content: Text(
-                                                                'Are you sure you want to delete order #${selectedOrder['id']}?',
-                                                              ),
-                                                              actions: [
-                                                                TextButton(
-                                                                  onPressed: () =>
-                                                                      Navigator.of(
-                                                                        confirmContext,
-                                                                      ).pop(
-                                                                        false,
-                                                                      ),
-                                                                  child:
-                                                                      const Text(
-                                                                        'Cancel',
-                                                                      ),
-                                                                ),
-                                                                ElevatedButton(
-                                                                  onPressed: () =>
-                                                                      Navigator.of(
-                                                                        confirmContext,
-                                                                      ).pop(
-                                                                        true,
-                                                                      ),
-                                                                  child:
-                                                                      const Text(
-                                                                        'Delete',
-                                                                      ),
-                                                                ),
-                                                              ],
-                                                            );
-                                                          },
-                                                        ) ??
-                                                        false;
+                                                        await _showDeleteConfirmationDialog(
+                                                          title:
+                                                              'Delete order?',
+                                                          message:
+                                                              'Are you sure you want to delete order #${selectedOrder['id']}?',
+                                                        );
                                                     if (!confirmed) return;
 
                                                     try {
@@ -1313,6 +1311,80 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                       ),
                                                       label: const Text(
                                                         'Print',
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    OutlinedButton.icon(
+                                                      onPressed: () async {
+                                                        final shiftId = _toInt(
+                                                          selectedShift['id'],
+                                                        );
+                                                        if (shiftId == null) {
+                                                          return;
+                                                        }
+                                                        if (selectedShift['ended_at'] ==
+                                                            null) {
+                                                          _showDropdownSnackbar(
+                                                            'Cannot delete an active/open shift.',
+                                                            isError: true,
+                                                          );
+                                                          return;
+                                                        }
+
+                                                        final confirmed =
+                                                            await _showDeleteConfirmationDialog(
+                                                              title:
+                                                                  'Delete shift?',
+                                                              message:
+                                                                  'Delete shift #$shiftId and remove its shift link from related orders?',
+                                                            );
+                                                        if (!confirmed) return;
+
+                                                        try {
+                                                          await supabase
+                                                              .from('orders')
+                                                              .update({
+                                                                'shift_id':
+                                                                    null,
+                                                              })
+                                                              .eq(
+                                                                'shift_id',
+                                                                shiftId,
+                                                              );
+                                                          await supabase
+                                                              .from('shifts')
+                                                              .delete()
+                                                              .eq(
+                                                                'id',
+                                                                shiftId,
+                                                              );
+
+                                                          if (!mounted) return;
+                                                          setDialogState(() {
+                                                            if (selectedShiftId ==
+                                                                shiftId) {
+                                                              selectedShiftId =
+                                                                  null;
+                                                            }
+                                                            shiftRowsFuture =
+                                                                _fetchShiftRowsForReport();
+                                                          });
+                                                          _showDropdownSnackbar(
+                                                            'Shift deleted.',
+                                                          );
+                                                        } catch (error) {
+                                                          if (!mounted) return;
+                                                          _showDropdownSnackbar(
+                                                            'Failed to delete shift: $error',
+                                                            isError: true,
+                                                          );
+                                                        }
+                                                      },
+                                                      icon: const Icon(
+                                                        Icons.delete_outline,
+                                                      ),
+                                                      label: const Text(
+                                                        'Delete Shift',
                                                       ),
                                                     ),
                                                   ],

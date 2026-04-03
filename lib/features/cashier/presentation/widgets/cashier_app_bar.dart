@@ -836,7 +836,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
                       const TabBar(
                         tabs: [
                           Tab(text: 'Shift Actions'),
-                          Tab(text: 'Shift Report'),
+                          Tab(text: 'Shift Log'),
                         ],
                       ),
                       const SizedBox(height: 12),
@@ -939,7 +939,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
                                 if (snapshot.hasError) {
                                   return Center(
                                     child: Text(
-                                      'Failed to load shift report: ${snapshot.error}',
+                                      'Failed to load shift log: ${snapshot.error}',
                                       textAlign: TextAlign.center,
                                     ),
                                   );
@@ -968,6 +968,15 @@ extension CashierAppBarMethods on _ProductListScreenState {
                                     final isOpen =
                                         status.toLowerCase() == 'open';
                                     return ListTile(
+                                      onTap: shiftId == null
+                                          ? null
+                                          : () async {
+                                              Navigator.of(dialogContext).pop();
+                                              await _showAllOrdersDialog(
+                                                initialTab: 'shift_report',
+                                                initialShiftId: shiftId,
+                                              );
+                                            },
                                       title: Text(
                                         'Shift #${row['id']} • ${status.toUpperCase()}',
                                       ),
