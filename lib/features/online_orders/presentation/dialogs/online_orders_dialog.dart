@@ -35,6 +35,13 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     return '';
   }
 
+  Future<void> _openSpecificShiftReport(int shiftId) async {
+    await _showAllOrdersDialog(
+      initialTab: 'shift_report',
+      initialShiftId: shiftId,
+    );
+  }
+
   List<String> _onlineOrderItemNotes(_OnlineOrderItem item) {
     final notes = <String>[];
     final rowNote = item.note?.trim() ?? '';
@@ -1086,24 +1093,23 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                           final shifts =
                               shiftSnapshot.data ?? <Map<String, dynamic>>[];
 
-                          if (selectedShiftId != null &&
-                              shifts.every(
-                                (shift) =>
-                                    (shift['id'] as num?)?.toInt() !=
-                                    selectedShiftId,
-                              )) {
-                            selectedShiftId = null;
+                          if (shiftSnapshot.hasData && shifts.isNotEmpty) {
+                            if (selectedShiftId != null &&
+                                shifts.every(
+                                  (shift) =>
+                                      _toInt(shift['id']) != selectedShiftId,
+                                )) {
+                              selectedShiftId = null;
+                            }
+
+                            selectedShiftId ??= _toInt(shifts.first['id']);
                           }
-                          selectedShiftId ??= shifts.isEmpty
-                              ? null
-                              : (shifts.first['id'] as num?)?.toInt();
 
                           final selectedShift = selectedShiftId == null
                               ? null
                               : shifts.firstWhere(
                                   (shift) =>
-                                      (shift['id'] as num?)?.toInt() ==
-                                      selectedShiftId,
+                                      _toInt(shift['id']) == selectedShiftId,
                                   orElse: () => <String, dynamic>{},
                                 );
 
@@ -1115,8 +1121,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                           .toString();
                                       final isDeleted =
                                           order['deleted_at'] != null;
-                                      return (order['shift_id'] as num?)
-                                                  ?.toInt() ==
+                                      return _toInt(order['shift_id']) ==
                                               selectedShiftId &&
                                           status == OrderStatus.completed &&
                                           !isDeleted;
@@ -1175,9 +1180,9 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                             itemCount: shifts.length,
                                             itemBuilder: (_, index) {
                                               final shift = shifts[index];
-                                              final shiftId =
-                                                  (shift['id'] as num?)
-                                                      ?.toInt();
+                                              final shiftId = _toInt(
+                                                shift['id'],
+                                              );
                                               final isSelected =
                                                   shiftId == selectedShiftId;
                                               final orderCount = rawOrders
@@ -1188,9 +1193,9 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                     final isDeleted =
                                                         order['deleted_at'] !=
                                                         null;
-                                                    return (order['shift_id']
-                                                                    as num?)
-                                                                ?.toInt() ==
+                                                    return _toInt(
+                                                              order['shift_id'],
+                                                            ) ==
                                                             shiftId &&
                                                         status ==
                                                             OrderStatus
@@ -1206,9 +1211,9 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                     final isDeleted =
                                                         order['deleted_at'] !=
                                                         null;
-                                                    return (order['shift_id']
-                                                                    as num?)
-                                                                ?.toInt() ==
+                                                    return _toInt(
+                                                              order['shift_id'],
+                                                            ) ==
                                                             shiftId &&
                                                         status ==
                                                             OrderStatus
