@@ -85,7 +85,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
     return AppBar(
       title: Row(
         children: [
-          const Text('Cashier Dashboard'),
+          const Text('Ulun'),
           const SizedBox(width: 8),
           Selector<CartProvider, ({bool networkOk, bool serverOk})>(
             selector: (_, cart) => (
@@ -131,11 +131,22 @@ extension CashierAppBarMethods on _ProductListScreenState {
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Center(
-              child: Text(
-                'No open shift',
-                style: TextStyle(
-                  color: Colors.red.shade700,
-                  fontWeight: FontWeight.w700,
+              child: InkWell(
+                onTap: _showShiftsDialog,
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
+                  child: Text(
+                    'No open shift',
+                    style: TextStyle(
+                      color: Colors.red.shade700,
+                      fontWeight: FontWeight.w700,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -624,20 +635,24 @@ extension CashierAppBarMethods on _ProductListScreenState {
     required int? cashierId,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    if (shiftId == null || cashierId == null) {
+    if (shiftId == null) {
       await prefs.remove(_cachedShiftIdKey);
       await prefs.remove(_cachedCashierIdKey);
       return;
     }
     await prefs.setInt(_cachedShiftIdKey, shiftId);
-    await prefs.setInt(_cachedCashierIdKey, cashierId);
+    if (cashierId == null) {
+      await prefs.remove(_cachedCashierIdKey);
+    } else {
+      await prefs.setInt(_cachedCashierIdKey, cashierId);
+    }
   }
 
   Future<void> _restoreCachedShiftLocally() async {
     final prefs = await SharedPreferences.getInstance();
     final shiftId = prefs.getInt(_cachedShiftIdKey);
     final cashierId = prefs.getInt(_cachedCashierIdKey);
-    if (shiftId == null || cashierId == null) return;
+    if (shiftId == null) return;
 
     if (!mounted) return;
     setState(() {
@@ -651,32 +666,96 @@ extension CashierAppBarMethods on _ProductListScreenState {
   }
 
   Future<void> _syncShiftContext() async {
+    await _offlineShiftRepository.init();
     try {
-      final openShift = await supabase
-          .from('shifts')
-          .select('id, current_cashier_id')
-          .eq('status', 'open')
-          .order('started_at', ascending: false)
-          .limit(1)
-          .maybeSingle();
+      final openShift = await _fetchOpenShiftWithRetry();
 
       if (!mounted) return;
 
       final shiftId = (openShift?['id'] as num?)?.toInt();
-      final cashierId = (openShift?['current_cashier_id'] as num?)?.toInt();
+      final cashierId =
+          (openShift?['current_cashier_id'] as num?)?.toInt() ??
+          (openShift?['opened_by'] as num?)?.toInt();
+
+      if (openShift != null) {
+        await _offlineShiftRepository.upsertCachedShift(openShift);
+      }
+
       setState(() {
         _activeShiftId = shiftId;
         _activeCashierId = cashierId;
       });
-      await _cacheActiveShiftLocally(shiftId: shiftId, cashierId: cashierId);
-      await _offlineShiftRepository.init();
 
-      if (_activeShiftId == null || _activeCashierId == null) {
+      await _cacheActiveShiftLocally(shiftId: shiftId, cashierId: cashierId);
+
+      if (_activeShiftId == null) {
+        final cachedShifts = await _offlineShiftRepository.getCachedShifts();
+        Map<String, dynamic>? cachedOpenShift;
+        for (final row in cachedShifts) {
+          if ((row['status']?.toString().toLowerCase() == 'open') &&
+              row['id'] != null) {
+            cachedOpenShift = row;
+            break;
+          }
+        }
+        if (cachedOpenShift != null) {
+          final cachedShiftId = (cachedOpenShift['id'] as num?)?.toInt();
+          final cachedCashierId =
+              (cachedOpenShift['current_cashier_id'] as num?)?.toInt() ??
+              (cachedOpenShift['opened_by'] as num?)?.toInt();
+          if (cachedShiftId != null && mounted) {
+            setState(() {
+              _activeShiftId = cachedShiftId;
+              _activeCashierId = cachedCashierId;
+            });
+            await _cacheActiveShiftLocally(
+              shiftId: cachedShiftId,
+              cashierId: cachedCashierId,
+            );
+          }
+        }
+      }
+
+      if (_activeShiftId == null) {
         await _showOpenShiftDialog();
       }
     } catch (_) {
       await _restoreCachedShiftLocally();
+
+      if (_activeShiftId == null && mounted) {
+        await _showOpenShiftDialog();
+      }
     }
+  }
+
+  Future<Map<String, dynamic>?> _fetchOpenShiftWithRetry() async {
+    const maxAttempts = 3;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        final openShift = await supabase
+            .from('shifts')
+            .select(
+              'id, status, branch_id, started_at, ended_at, current_cashier_id, opened_by',
+            )
+            .eq('status', 'open')
+            .order('started_at', ascending: false)
+            .limit(1)
+            .maybeSingle();
+
+        if (openShift != null) {
+          return Map<String, dynamic>.from(openShift);
+        }
+      } catch (e) {
+        if (attempt == maxAttempts - 1) {
+          rethrow;
+        }
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+      }
+    }
+    return null;
   }
 
   int? _asInt(dynamic value) {
@@ -703,7 +782,21 @@ extension CashierAppBarMethods on _ProductListScreenState {
           )
           .order('started_at', ascending: false)
           .limit(50);
-      final normalized = _normalizeCashierRows(rows);
+      var normalized = _normalizeCashierRows(rows);
+      if (normalized.isEmpty) {
+        final openShift = await supabase
+            .from('shifts')
+            .select(
+              'id, status, branch_id, started_at, ended_at, current_cashier_id, opened_by, closed_by',
+            )
+            .eq('status', 'open')
+            .order('started_at', ascending: false)
+            .limit(1)
+            .maybeSingle();
+        if (openShift != null) {
+          normalized = [Map<String, dynamic>.from(openShift)];
+        }
+      }
       await _offlineShiftRepository.replaceCachedShifts(normalized);
       return normalized;
     } catch (_) {

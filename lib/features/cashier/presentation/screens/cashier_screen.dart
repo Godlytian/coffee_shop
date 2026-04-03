@@ -47,6 +47,9 @@ Map<String, dynamic> _buildMenuProjectionPayload(Map<String, dynamic> payload) {
           .map((item) => item.toString())
           .toSet();
   final selectedCategory = payload['selectedCategory'] as String?;
+  final searchQuery = (payload['searchQuery'] as String? ?? '')
+      .trim()
+      .toLowerCase();
 
   final visibleProducts = products
       .where((product) => !hiddenCategories.contains(product['category']))
@@ -61,7 +64,7 @@ Map<String, dynamic> _buildMenuProjectionPayload(Map<String, dynamic> payload) {
   final effectiveSelectedCategory = categories.contains(selectedCategory)
       ? selectedCategory
       : null;
-  final filteredProducts = effectiveSelectedCategory == null
+  var filteredProducts = effectiveSelectedCategory == null
       ? visibleProducts
       : visibleProducts
             .where(
@@ -69,6 +72,19 @@ Map<String, dynamic> _buildMenuProjectionPayload(Map<String, dynamic> payload) {
                   product['category']?.toString() == effectiveSelectedCategory,
             )
             .toList(growable: false);
+  if (searchQuery.isNotEmpty) {
+    filteredProducts = filteredProducts
+        .where((product) {
+          final productName = product['name']?.toString().toLowerCase() ?? '';
+          return productName.contains(searchQuery);
+        })
+        .toList(growable: false);
+  }
+  filteredProducts.sort((a, b) {
+    final nameA = a['name']?.toString().toLowerCase() ?? '';
+    final nameB = b['name']?.toString().toLowerCase() ?? '';
+    return nameA.compareTo(nameB);
+  });
 
   return {
     'visibleProducts': visibleProducts,
@@ -120,7 +136,11 @@ class _ProductListScreenState extends State<ProductListScreen> {
   final ValueNotifier<String?> _selectedCategoryNotifier =
       ValueNotifier<String?>(null);
   final Set<String> _hiddenMenuCategories = <String>{};
+  final Map<String, Color> _menuCategoryColors = <String, Color>{};
+  final TextEditingController _menuSearchController = TextEditingController();
   String _menuLayout = 'grid_4';
+  bool _showMenuSearchBar = true;
+  String _menuSearchQuery = '';
   String _orderType = 'dine_in';
   String? _customerName;
   String? _tableName;
@@ -328,6 +348,9 @@ class _ProductListScreenState extends State<ProductListScreen> {
     _onlinePaidOrdersCountNotifier.dispose();
     _selectedCategoryNotifier.dispose();
     _isCartExpandedNotifier.dispose();
+    _selectedCategoryNotifier.dispose();
+    _isCartExpandedNotifier.dispose();
+    _snackbarAnimationController?.dispose();
     _snackbarAnimationController?.dispose();
     _snackbarOverlayEntry?.remove();
     _filteredProductsNotifier.dispose();
@@ -353,6 +376,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
             .toList(),
         'hiddenCategories': _hiddenMenuCategories.toList(growable: false),
         'selectedCategory': targetCategory,
+        'searchQuery': _menuSearchQuery,
       };
       final result = await compute(_buildMenuProjectionPayload, payload);
       if (!mounted) return;
@@ -525,6 +549,19 @@ class _ProductListScreenState extends State<ProductListScreen> {
     }
   }
 
+  Future<void> _refreshMenuProducts() async {
+    final nextFuture = _loadProducts();
+    if (mounted) {
+      setState(() {
+        _future = nextFuture;
+      });
+    }
+    final products = await nextFuture;
+    if (!mounted) return;
+    _allProductsCache = products;
+    await _refreshMenuProjection();
+  }
+
   @override
   Widget build(BuildContext context) {
     const panelFadeDuration = Duration(milliseconds: 80);
@@ -564,29 +601,45 @@ class _ProductListScreenState extends State<ProductListScreen> {
                           child: Column(
                             children: [
                               _buildColumnHeader(
-                                title: 'Menu List',
+                                title: 'Menu',
                                 trailing: PopupMenuButton<String>(
                                   tooltip: 'Menu settings',
                                   icon: const Icon(Icons.more_vert),
                                   itemBuilder: (context) => const [
-                                    PopupMenuItem(
-                                      value: 'refresh',
-                                      child: Text('Refresh menu'),
-                                    ),
                                     PopupMenuItem(
                                       value: 'view_settings',
                                       child: Text('View settings'),
                                     ),
                                   ],
                                   onSelected: (value) async {
-                                    if (value == 'refresh') {
-                                      setState(() => _future = _loadProducts());
-                                    } else if (value == 'view_settings') {
+                                    if (value == 'view_settings') {
                                       await _showMenuViewSettingsDialog();
                                     }
                                   },
                                 ),
                               ),
+                              if (_showMenuSearchBar)
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    12,
+                                    10,
+                                    12,
+                                    8,
+                                  ),
+                                  child: TextField(
+                                    controller: _menuSearchController,
+                                    decoration: const InputDecoration(
+                                      prefixIcon: Icon(Icons.search),
+                                      hintText: 'Search products...',
+                                      border: OutlineInputBorder(),
+                                      isDense: true,
+                                    ),
+                                    onChanged: (value) {
+                                      _menuSearchQuery = value.trim();
+                                      unawaited(_refreshMenuProjection());
+                                    },
+                                  ),
+                                ),
                               Expanded(
                                 child: Container(
                                   color: Colors.grey[100],
@@ -676,10 +729,14 @@ class _ProductListScreenState extends State<ProductListScreen> {
                                               return Column(
                                                 children: [
                                                   Expanded(
-                                                    child:
-                                                        _buildMenuLayoutContent(
-                                                          filteredProducts,
-                                                        ),
+                                                    child: RefreshIndicator(
+                                                      onRefresh:
+                                                          _refreshMenuProducts,
+                                                      child:
+                                                          _buildMenuLayoutContent(
+                                                            filteredProducts,
+                                                          ),
+                                                    ),
                                                   ),
                                                   SizedBox(
                                                     height: 56,
@@ -1732,6 +1789,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
   Widget _buildMenuLayoutContent(List<Product> filteredProducts) {
     if (_menuLayout == 'list') {
       return ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(12),
         itemCount: filteredProducts.length,
         separatorBuilder: (_, __) => const SizedBox(height: 8),
@@ -1756,6 +1814,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
         : 4;
 
     return GridView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16.0),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: crossAxisCount,
@@ -1779,7 +1838,12 @@ class _ProductListScreenState extends State<ProductListScreen> {
         products.map((product) => product.category).toSet().toList()..sort();
 
     final tempHiddenCategories = Set<String>.from(_hiddenMenuCategories);
+    final tempCategoryColors = Map<String, Color>.from(_menuCategoryColors);
     var tempLayout = _menuLayout;
+    var tempShowSearchBar = _showMenuSearchBar;
+    var showVisibilitySettings = false;
+    var showLayoutSettings = false;
+    var showColorSettings = false;
 
     await showDialog<void>(
       context: context,
@@ -1793,60 +1857,142 @@ class _ProductListScreenState extends State<ProductListScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'Visible categories',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ExpansionTile(
+                    title: const Text(
+                      'Visible categories',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    initiallyExpanded: false,
+                    maintainState: true,
+                    onExpansionChanged: (value) =>
+                        setDialogState(() => showVisibilitySettings = value),
+                    children: [
+                      if (showVisibilitySettings)
+                        ...categories.map((category) {
+                          final visible = !tempHiddenCategories.contains(
+                            category,
+                          );
+                          return CheckboxListTile(
+                            value: visible,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(category),
+                            onChanged: (value) {
+                              setDialogState(() {
+                                if (value == true) {
+                                  tempHiddenCategories.remove(category);
+                                } else {
+                                  tempHiddenCategories.add(category);
+                                }
+                              });
+                            },
+                          );
+                        }),
+                    ],
                   ),
-                  const SizedBox(height: 8),
-                  ...categories.map((category) {
-                    final visible = !tempHiddenCategories.contains(category);
-                    return CheckboxListTile(
-                      value: visible,
-                      contentPadding: EdgeInsets.zero,
-                      title: Text(category),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          if (value == true) {
-                            tempHiddenCategories.remove(category);
-                          } else {
-                            tempHiddenCategories.add(category);
-                          }
-                        });
-                      },
-                    );
-                  }),
-                  const Divider(height: 24),
-                  const Text(
-                    'Layout',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ExpansionTile(
+                    title: const Text(
+                      'Layout',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    initiallyExpanded: false,
+                    maintainState: true,
+                    onExpansionChanged: (value) =>
+                        setDialogState(() => showLayoutSettings = value),
+                    children: [
+                      if (showLayoutSettings) ...[
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Show search bar'),
+                          value: tempShowSearchBar,
+                          onChanged: (value) =>
+                              setDialogState(() => tempShowSearchBar = value),
+                        ),
+                        RadioListTile<String>(
+                          value: 'list',
+                          groupValue: tempLayout,
+                          title: const Text('List product layout'),
+                          onChanged: (value) => setDialogState(
+                            () => tempLayout = value ?? 'list',
+                          ),
+                        ),
+                        RadioListTile<String>(
+                          value: 'grid_3',
+                          groupValue: tempLayout,
+                          title: const Text('3 x 3 product grid'),
+                          onChanged: (value) => setDialogState(
+                            () => tempLayout = value ?? 'grid_3',
+                          ),
+                        ),
+                        RadioListTile<String>(
+                          value: 'grid_4',
+                          groupValue: tempLayout,
+                          title: const Text('4 x 4 product grid'),
+                          onChanged: (value) => setDialogState(
+                            () => tempLayout = value ?? 'grid_4',
+                          ),
+                        ),
+                        RadioListTile<String>(
+                          value: 'grid_5',
+                          groupValue: tempLayout,
+                          title: const Text('5 x 5 product grid'),
+                          onChanged: (value) => setDialogState(
+                            () => tempLayout = value ?? 'grid_5',
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                  RadioListTile<String>(
-                    value: 'list',
-                    groupValue: tempLayout,
-                    title: const Text('List product layout'),
-                    onChanged: (value) =>
-                        setDialogState(() => tempLayout = value ?? 'list'),
-                  ),
-                  RadioListTile<String>(
-                    value: 'grid_3',
-                    groupValue: tempLayout,
-                    title: const Text('3 x 3 product grid'),
-                    onChanged: (value) =>
-                        setDialogState(() => tempLayout = value ?? 'grid_3'),
-                  ),
-                  RadioListTile<String>(
-                    value: 'grid_4',
-                    groupValue: tempLayout,
-                    title: const Text('4 x 4 product grid'),
-                    onChanged: (value) =>
-                        setDialogState(() => tempLayout = value ?? 'grid_4'),
-                  ),
-                  RadioListTile<String>(
-                    value: 'grid_5',
-                    groupValue: tempLayout,
-                    title: const Text('5 x 5 product grid'),
-                    onChanged: (value) =>
-                        setDialogState(() => tempLayout = value ?? 'grid_5'),
+                  ExpansionTile(
+                    title: const Text(
+                      'Category colors',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    initiallyExpanded: false,
+                    maintainState: true,
+                    onExpansionChanged: (value) =>
+                        setDialogState(() => showColorSettings = value),
+                    children: [
+                      if (showColorSettings)
+                        ...categories.map((category) {
+                          final selectedColor =
+                              tempCategoryColors[category] ??
+                              _defaultCategoryColor(category);
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(category),
+                            subtitle: Wrap(
+                              spacing: 8,
+                              children: [
+                                ..._menuCategoryPalette.map((color) {
+                                  final isSelected =
+                                      selectedColor.value == color.value;
+                                  return InkWell(
+                                    onTap: () => setDialogState(
+                                      () =>
+                                          tempCategoryColors[category] = color,
+                                    ),
+                                    borderRadius: BorderRadius.circular(99),
+                                    child: Container(
+                                      width: 26,
+                                      height: 26,
+                                      decoration: BoxDecoration(
+                                        color: color,
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                          color: isSelected
+                                              ? Colors.black
+                                              : Colors.transparent,
+                                          width: 2,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                }),
+                              ],
+                            ),
+                          );
+                        }),
+                    ],
                   ),
                 ],
               ),
@@ -1863,7 +2009,15 @@ class _ProductListScreenState extends State<ProductListScreen> {
                   _hiddenMenuCategories
                     ..clear()
                     ..addAll(tempHiddenCategories);
+                  _menuCategoryColors
+                    ..clear()
+                    ..addAll(tempCategoryColors);
                   _menuLayout = tempLayout;
+                  _showMenuSearchBar = tempShowSearchBar;
+                  if (!_showMenuSearchBar) {
+                    _menuSearchController.clear();
+                    _menuSearchQuery = '';
+                  }
                 });
                 unawaited(_refreshMenuProjection());
                 Navigator.of(dialogContext).pop();
@@ -1876,7 +2030,20 @@ class _ProductListScreenState extends State<ProductListScreen> {
     );
   }
 
-  Color _categoryColor(String category) {
+  static const List<Color> _menuCategoryPalette = [
+    Colors.blue,
+    Colors.teal,
+    Colors.green,
+    Colors.orange,
+    Colors.deepOrange,
+    Colors.purple,
+    Colors.indigo,
+    Colors.brown,
+    Colors.red,
+    Colors.blueGrey,
+  ];
+
+  Color _defaultCategoryColor(String category) {
     switch (category.trim().toLowerCase()) {
       case 'coffee':
         return Colors.blue.shade700;
@@ -1891,6 +2058,10 @@ class _ProductListScreenState extends State<ProductListScreen> {
       default:
         return Colors.blueGrey.shade500;
     }
+  }
+
+  Color _categoryColor(String category) {
+    return _menuCategoryColors[category] ?? _defaultCategoryColor(category);
   }
 
   Map<String, CartItem> _selectedCartEntries() {
