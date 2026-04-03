@@ -171,8 +171,12 @@ class _ProductListScreenState extends State<ProductListScreen> {
   final Map<int, String> _onlineOrderItemPreviewCache = <int, String>{};
   final Set<int> _onlineOrderItemPreviewLoading = <int>{};
 
+  Timer? _cashierHeartbeatTimer;
+  bool _isOnlineOrdersEnabled = true;
+  DateTime? _cashierLastSeenAt;
+
   Stream<List<Map<String, dynamic>>> get _onlinePendingOrdersStream =>
-      _activeShiftId == null
+      _activeShiftId == null || !_isOnlineOrdersEnabled
       ? Stream<List<Map<String, dynamic>>>.value(const <Map<String, dynamic>>[])
       : _onlineOrdersRepository.pendingOnlineOrdersStream();
 
@@ -203,6 +207,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncShiftContext();
     });
+    unawaited(_initializeStoreSettingsHeartbeat());
     _startOnlineOrderBadgeListener();
   }
 
@@ -230,8 +235,94 @@ class _ProductListScreenState extends State<ProductListScreen> {
     _lastKnownOnlineReachable = isOnlineReachable;
   }
 
+  Future<void> _initializeStoreSettingsHeartbeat() async {
+    await _ensureStoreSettingsRow();
+    await _refreshStoreSettingsStatus();
+    await _sendCashierHeartbeat();
+
+    _cashierHeartbeatTimer?.cancel();
+    _cashierHeartbeatTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      unawaited(_sendCashierHeartbeat());
+    });
+  }
+
+  Future<void> _ensureStoreSettingsRow() async {
+    try {
+      await supabase.from('store_settings').upsert({
+        'id': 1,
+        'is_online_active': true,
+      }, onConflict: 'id');
+    } catch (_) {
+      // ignore when table is not yet provisioned or blocked by policy.
+    }
+  }
+
+  Future<void> _refreshStoreSettingsStatus() async {
+    try {
+      final row = await supabase
+          .from('store_settings')
+          .select('is_online_active, cashier_last_seen')
+          .eq('id', 1)
+          .maybeSingle();
+      if (!mounted || row == null) return;
+      setState(() {
+        _isOnlineOrdersEnabled =
+            (row['is_online_active'] as bool?) ?? _isOnlineOrdersEnabled;
+        final rawSeen = row['cashier_last_seen']?.toString();
+        _cashierLastSeenAt = rawSeen == null
+            ? null
+            : DateTime.tryParse(rawSeen);
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _sendCashierHeartbeat() async {
+    final now = DateTime.now().toUtc();
+    try {
+      await supabase.from('store_settings').upsert({
+        'id': 1,
+        'cashier_last_seen': now.toIso8601String(),
+        'is_online_active': _isOnlineOrdersEnabled,
+      }, onConflict: 'id');
+      if (!mounted) return;
+      setState(() {
+        _cashierLastSeenAt = now;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _setOnlineOrdersEnabled(bool enabled) async {
+    final previous = _isOnlineOrdersEnabled;
+    setState(() {
+      _isOnlineOrdersEnabled = enabled;
+    });
+    try {
+      await supabase.from('store_settings').upsert({
+        'id': 1,
+        'is_online_active': enabled,
+        'cashier_last_seen': (_cashierLastSeenAt ?? DateTime.now().toUtc())
+            .toIso8601String(),
+      }, onConflict: 'id');
+      await _sendCashierHeartbeat();
+      if (!mounted) return;
+      _showDropdownSnackbar(
+        enabled ? 'Online orders enabled.' : 'Online orders paused.',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isOnlineOrdersEnabled = previous;
+      });
+      _showDropdownSnackbar(
+        'Failed to update online order status: $error',
+        isError: true,
+      );
+    }
+  }
+
   @override
   void dispose() {
+    _cashierHeartbeatTimer?.cancel();
     _cartProviderSubscription?.removeListener(_handleConnectionStateChange);
     _onlineOrderBadgeSubscription?.cancel();
     _onlinePaidOrdersCountNotifier.dispose();

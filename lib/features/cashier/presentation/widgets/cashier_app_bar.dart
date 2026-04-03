@@ -200,43 +200,212 @@ extension CashierAppBarMethods on _ProductListScreenState {
             );
           },
         ),
-        PopupMenuButton<String>(
+        IconButton(
           tooltip: 'App menu',
           icon: const Icon(Icons.menu),
-          itemBuilder: (context) => const [
-            PopupMenuItem(value: 'cashier', child: Text('Cashier Page')),
-            PopupMenuItem(value: 'showorders', child: Text('Show Orders')),
-            PopupMenuItem(value: 'shifts', child: Text('Shifts')),
-            PopupMenuItem(value: 'sync_status', child: Text('Sync status')),
-            PopupMenuItem(
-              value: 'courier_settings',
-              child: Text('Courier message settings'),
-            ),
-            PopupMenuItem(value: 'refresh_app', child: Text('Refresh')),
-            PopupMenuItem(value: 'printer', child: Text('Printer settings')),
-          ],
-          onSelected: (value) async {
-            if (value == 'cashier') {
-              _showDropdownSnackbar('Cashier page active');
-            } else if (value == 'showorders') {
-              _showAllOrdersDialog();
-            } else if (value == 'shifts') {
-              await _showShiftsDialog();
-            } else if (value == 'sync_status') {
-              await _showSyncStatusScreen();
-            } else if (value == 'courier_settings') {
-              await _showCourierSettingsDialog();
-            } else if (value == 'refresh_app') {
-              await _refreshAppData();
-            } else if (value == 'printer') {
-              showPrinterSettingsDialog(
-                context,
-                onNotify: _showDropdownSnackbar,
-              );
-            }
-          },
+          onPressed: _showAppMenuDialog,
         ),
       ],
+    );
+  }
+
+  Future<void> _showAppMenuDialog() async {
+    await _refreshStoreSettingsStatus();
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final lastSeenLabel = _cashierLastSeenAt == null
+                ? 'Never'
+                : _cashierLastSeenAt!.toLocal().toString();
+
+            // Helper method for grid cards
+            Widget buildGridItem({
+              required IconData icon,
+              required String title,
+              required VoidCallback onTap,
+              Color? iconColor,
+              Color? backgroundColor,
+            }) {
+              return Card(
+                elevation: 1,
+                color: backgroundColor,
+                clipBehavior: Clip.antiAlias,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(
+                    color: backgroundColor != null
+                        ? backgroundColor.withOpacity(0.5)
+                        : Colors.grey.shade200,
+                  ),
+                ),
+                child: InkWell(
+                  onTap: onTap,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          icon,
+                          size: 32,
+                          color: iconColor ?? Colors.blueGrey.shade700,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: iconColor ?? Colors.black87,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            return AlertDialog(
+              title: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('App Menu'),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Cashier heartbeat last seen: $lastSeenLabel',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade600,
+                      fontWeight: FontWeight.normal,
+                    ),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: 480,
+                child: GridView.count(
+                  shrinkWrap: true,
+                  crossAxisCount: 3,
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 12,
+                  childAspectRatio: 1.1,
+                  children: [
+                    // 1. ONLINE ORDERS TOGGLE CARD
+                    buildGridItem(
+                      icon: _isOnlineOrdersEnabled
+                          ? Icons.wifi
+                          : Icons.wifi_off,
+                      title:
+                          'Online Orders:\n${_isOnlineOrdersEnabled ? "OPEN" : "PAUSED"}',
+                      iconColor: _isOnlineOrdersEnabled
+                          ? Colors.green.shade700
+                          : Colors.red.shade700,
+                      backgroundColor: _isOnlineOrdersEnabled
+                          ? Colors.green.shade50
+                          : Colors.red.shade50,
+                      onTap: () async {
+                        final newValue = !_isOnlineOrdersEnabled;
+                        await _setOnlineOrdersEnabled(newValue);
+                        // Update the dialog UI immediately after toggling
+                        if (mounted) {
+                          setDialogState(() {});
+                        }
+                      },
+                    ),
+
+                    // 2. CASHIER PAGE
+                    buildGridItem(
+                      icon: Icons.point_of_sale_outlined,
+                      title: 'Cashier Page',
+                      onTap: () {
+                        Navigator.of(dialogContext).pop();
+                        _showDropdownSnackbar('Cashier page active');
+                      },
+                    ),
+
+                    // 3. SHOW ORDERS
+                    buildGridItem(
+                      icon: Icons.receipt_long,
+                      title: 'Show Orders',
+                      onTap: () {
+                        Navigator.of(dialogContext).pop();
+                        _showAllOrdersDialog();
+                      },
+                    ),
+
+                    // 4. SHIFTS
+                    buildGridItem(
+                      icon: Icons.history_toggle_off,
+                      title: 'Shifts',
+                      onTap: () async {
+                        Navigator.of(dialogContext).pop();
+                        await _showShiftsDialog();
+                      },
+                    ),
+
+                    // 5. SYNC STATUS
+                    buildGridItem(
+                      icon: Icons.sync,
+                      title: 'Sync Status',
+                      onTap: () async {
+                        Navigator.of(dialogContext).pop();
+                        await _showSyncStatusScreen();
+                      },
+                    ),
+
+                    // 6. COURIER SETTINGS
+                    buildGridItem(
+                      icon: Icons.local_shipping_outlined,
+                      title: 'Courier Settings',
+                      onTap: () async {
+                        Navigator.of(dialogContext).pop();
+                        await _showCourierSettingsDialog();
+                      },
+                    ),
+
+                    // 7. REFRESH
+                    buildGridItem(
+                      icon: Icons.refresh,
+                      title: 'Refresh',
+                      onTap: () async {
+                        Navigator.of(dialogContext).pop();
+                        await _refreshAppData();
+                      },
+                    ),
+
+                    // 8. PRINTER SETTINGS
+                    buildGridItem(
+                      icon: Icons.print_outlined,
+                      title: 'Printer Settings',
+                      onTap: () {
+                        Navigator.of(dialogContext).pop();
+                        showPrinterSettingsDialog(
+                          context,
+                          onNotify: _showDropdownSnackbar,
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Close'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -524,6 +693,37 @@ extension CashierAppBarMethods on _ProductListScreenState {
         .toList(growable: false);
   }
 
+  Future<List<Map<String, dynamic>>> _fetchShiftReportRows() async {
+    await _offlineShiftRepository.init();
+    try {
+      final rows = await supabase
+          .from('shifts')
+          .select(
+            'id, status, branch_id, started_at, ended_at, current_cashier_id, opened_by, closed_by',
+          )
+          .order('started_at', ascending: false)
+          .limit(50);
+      final normalized = _normalizeCashierRows(rows);
+      await _offlineShiftRepository.replaceCachedShifts(normalized);
+      return normalized;
+    } catch (_) {
+      return _offlineShiftRepository.getCachedShifts();
+    }
+  }
+
+  String _formatShiftDateTime(dynamic value) {
+    final raw = value?.toString() ?? '';
+    if (raw.isEmpty) return '-';
+    final dt = DateTime.tryParse(raw)?.toLocal();
+    if (dt == null) return raw;
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $hh:$mm';
+  }
+
   Future<void> _showShiftsDialog() async {
     Map<String, dynamic>? openShift;
     try {
@@ -551,84 +751,263 @@ extension CashierAppBarMethods on _ProductListScreenState {
     final currentCashierId =
         _asInt(openShift?['current_cashier_id']) ?? _activeCashierId;
 
+    var shiftReportRefreshKey = 0;
+
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Shifts'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                openShiftId == null
-                    ? 'No active shift. Open a shift before making orders.'
-                    : 'Active shift #$openShiftId (branch: $branchId).',
-              ),
-              if (currentCashierId != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text('Current cashier id: $currentCashierId'),
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> handleDeleteShift(int shiftId) async {
+              final confirmed = await showDialog<bool>(
+                context: dialogContext,
+                builder: (confirmContext) => AlertDialog(
+                  title: const Text('Delete Shift'),
+                  content: Text(
+                    'Delete shift #$shiftId? This cannot be undone.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(confirmContext).pop(false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.of(confirmContext).pop(true),
+                      child: const Text('Delete'),
+                    ),
+                  ],
                 ),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: openShiftId == null
-                        ? null
-                        : () async {
-                            Navigator.of(dialogContext).pop();
-                            await _showChangeCurrentCashierDialog(
-                              shiftId: openShiftId,
-                              currentCashierId: currentCashierId,
-                            );
-                          },
-                    icon: const Icon(Icons.swap_horiz),
-                    label: const Text('Change Cashier'),
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: openShiftId == null
-                        ? () async {
-                            Navigator.of(dialogContext).pop();
-                            await _showOpenShiftDialog(force: true);
-                          }
-                        : null,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('Open Shift'),
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: openShiftId == null
-                        ? null
-                        : () async {
-                            Navigator.of(dialogContext).pop();
-                            await _closeShift(openShiftId);
-                          },
-                    icon: const Icon(Icons.stop_circle_outlined),
-                    label: const Text('Close Shift'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      Navigator.of(dialogContext).pop();
-                      await _showAddCashierDialog();
+              );
+
+              if (confirmed != true) return;
+
+              final nowIso = DateTime.now().toUtc().toIso8601String();
+              try {
+                await supabase.from('shifts').delete().eq('id', shiftId);
+                await _offlineShiftRepository.removeCachedShift(shiftId);
+                if (!mounted) return;
+                _showDropdownSnackbar('Shift #$shiftId deleted.');
+                setDialogState(() {
+                  shiftReportRefreshKey++;
+                });
+              } on PostgrestException catch (error) {
+                final lower = error.message.toLowerCase();
+                final hasOrderReference =
+                    error.code == '23503' && lower.contains('order');
+                _showDropdownSnackbar(
+                  hasOrderReference
+                      ? 'Cannot delete shift #$shiftId because it is referenced by existing orders.'
+                      : 'Failed to delete shift: ${error.message}',
+                  isError: true,
+                );
+              } catch (_) {
+                await _offlineShiftRepository.removeCachedShift(shiftId);
+                await context.read<CartProvider>().enqueueOfflineShiftEvent(
+                  eventType: 'shift_delete',
+                  label: 'shift_delete #$shiftId',
+                  payload: {
+                    'shift': {
+                      'shift_id': shiftId,
+                      'deleted_at': nowIso,
+                      'cashier_id': _activeCashierId,
                     },
-                    icon: const Icon(Icons.person_add_alt_1),
-                    label: const Text('Add Cashier'),
+                  },
+                );
+                if (!mounted) return;
+                _showDropdownSnackbar(
+                  'Shift delete queued for sync (offline mode).',
+                  isError: true,
+                );
+                setDialogState(() {
+                  shiftReportRefreshKey++;
+                });
+              }
+            }
+
+            return DefaultTabController(
+              length: 2,
+              child: AlertDialog(
+                title: const Text('Shifts'),
+                content: SizedBox(
+                  width: 760,
+                  height: 520,
+                  child: Column(
+                    children: [
+                      const TabBar(
+                        tabs: [
+                          Tab(text: 'Shift Actions'),
+                          Tab(text: 'Shift Report'),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: TabBarView(
+                          children: [
+                            SingleChildScrollView(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    openShiftId == null
+                                        ? 'No active shift. Open a shift before making orders.'
+                                        : 'Active shift #$openShiftId (branch: $branchId).',
+                                  ),
+                                  if (currentCashierId != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 8),
+                                      child: Text(
+                                        'Current cashier id: $currentCashierId',
+                                      ),
+                                    ),
+                                  const SizedBox(height: 16),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: [
+                                      ElevatedButton.icon(
+                                        onPressed: openShiftId == null
+                                            ? null
+                                            : () async {
+                                                Navigator.of(
+                                                  dialogContext,
+                                                ).pop();
+                                                await _showChangeCurrentCashierDialog(
+                                                  shiftId: openShiftId,
+                                                  currentCashierId:
+                                                      currentCashierId,
+                                                );
+                                              },
+                                        icon: const Icon(Icons.swap_horiz),
+                                        label: const Text('Change Cashier'),
+                                      ),
+                                      ElevatedButton.icon(
+                                        onPressed: openShiftId == null
+                                            ? () async {
+                                                Navigator.of(
+                                                  dialogContext,
+                                                ).pop();
+                                                await _showOpenShiftDialog(
+                                                  force: true,
+                                                );
+                                              }
+                                            : null,
+                                        icon: const Icon(Icons.play_arrow),
+                                        label: const Text('Open Shift'),
+                                      ),
+                                      ElevatedButton.icon(
+                                        onPressed: openShiftId == null
+                                            ? null
+                                            : () async {
+                                                Navigator.of(
+                                                  dialogContext,
+                                                ).pop();
+                                                await _closeShift(openShiftId);
+                                              },
+                                        icon: const Icon(
+                                          Icons.stop_circle_outlined,
+                                        ),
+                                        label: const Text('Close Shift'),
+                                      ),
+                                      OutlinedButton.icon(
+                                        onPressed: () async {
+                                          Navigator.of(dialogContext).pop();
+                                          await _showAddCashierDialog();
+                                        },
+                                        icon: const Icon(
+                                          Icons.person_add_alt_1,
+                                        ),
+                                        label: const Text('Add Cashier'),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            FutureBuilder<List<Map<String, dynamic>>>(
+                              key: ValueKey(shiftReportRefreshKey),
+                              future: _fetchShiftReportRows(),
+                              builder: (context, snapshot) {
+                                final rows =
+                                    snapshot.data ??
+                                    const <Map<String, dynamic>>[];
+                                if (snapshot.connectionState ==
+                                    ConnectionState.waiting) {
+                                  return const Center(
+                                    child: CircularProgressIndicator(),
+                                  );
+                                }
+                                if (snapshot.hasError) {
+                                  return Center(
+                                    child: Text(
+                                      'Failed to load shift report: ${snapshot.error}',
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  );
+                                }
+                                if (rows.isEmpty) {
+                                  return const Center(
+                                    child: Text('No shifts found.'),
+                                  );
+                                }
+
+                                return ListView.separated(
+                                  itemCount: rows.length,
+                                  separatorBuilder: (_, __) =>
+                                      const Divider(height: 1),
+                                  itemBuilder: (_, index) {
+                                    final row = rows[index];
+                                    final shiftId = _asInt(row['id']);
+                                    final status = (row['status'] ?? '-')
+                                        .toString();
+                                    final startedAt = _formatShiftDateTime(
+                                      row['started_at'],
+                                    );
+                                    final endedAt = _formatShiftDateTime(
+                                      row['ended_at'],
+                                    );
+                                    final isOpen =
+                                        status.toLowerCase() == 'open';
+                                    return ListTile(
+                                      title: Text(
+                                        'Shift #${row['id']} • ${status.toUpperCase()}',
+                                      ),
+                                      subtitle: Text(
+                                        'Branch: ${row['branch_id'] ?? '-'}\nStart: $startedAt\nEnd: $endedAt',
+                                      ),
+                                      isThreeLine: true,
+                                      trailing: shiftId == null || isOpen
+                                          ? null
+                                          : IconButton(
+                                              tooltip: 'Delete shift',
+                                              icon: const Icon(
+                                                Icons.delete_outline,
+                                                color: Colors.red,
+                                              ),
+                                              onPressed: () =>
+                                                  handleDeleteShift(shiftId),
+                                            ),
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Close'),
                   ),
                 ],
               ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -889,6 +1268,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
                       'branch_id': branchId,
                       'status': 'open',
                       'current_cashier_id': cashierId,
+                      'started_at': DateTime.now().toUtc().toIso8601String(),
                       'opened_by': cashierId,
                     })
                     .select('id, current_cashier_id')
@@ -898,6 +1278,20 @@ extension CashierAppBarMethods on _ProductListScreenState {
                 final shiftId = (created['id'] as num?)?.toInt();
                 final createdCashierId = (created['current_cashier_id'] as num?)
                     ?.toInt();
+
+                if (shiftId != null) {
+                  await _offlineShiftRepository.upsertCachedShift({
+                    'id': shiftId,
+                    'status': 'open',
+                    'branch_id': branchId,
+                    'started_at': DateTime.now().toUtc().toIso8601String(),
+                    'ended_at': null,
+                    'current_cashier_id': createdCashierId ?? cashierId,
+                    'opened_by': cashierId,
+                    'closed_by': null,
+                  });
+                }
+
                 setState(() {
                   _activeShiftId = shiftId;
                   _activeCashierId = createdCashierId;
@@ -969,11 +1363,23 @@ extension CashierAppBarMethods on _ProductListScreenState {
                       'local_shift_id': _activeShiftId,
                       'cashier_id': cashierId,
                       'branch_id': branchId,
-                      'started_at': DateTime.now().toIso8601String(),
+                      'started_at': DateTime.now().toUtc().toIso8601String(),
                       'opened_by': cashierId,
                     },
                   },
                 );
+
+                await _offlineShiftRepository.upsertCachedShift({
+                  'id': _activeShiftId,
+                  'status': 'open',
+                  'branch_id': branchId,
+                  'started_at': DateTime.now().toUtc().toIso8601String(),
+                  'ended_at': null,
+                  'current_cashier_id': cashierId,
+                  'opened_by': cashierId,
+                  'closed_by': null,
+                });
+
                 if (dialogContext.mounted) Navigator.of(dialogContext).pop();
                 _showDropdownSnackbar(
                   'Shift opened offline and queued for sync.',
@@ -1248,7 +1654,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
       final orderShiftId = _asInt(order['shift_id']);
       return !isDeleted &&
           activeStatuses.contains(status) &&
-          orderShiftId == shiftId; 
+          orderShiftId == shiftId;
     }).length;
 
     if (remainingActiveOrders > 0) {
@@ -1261,14 +1667,21 @@ extension CashierAppBarMethods on _ProductListScreenState {
     }
 
     try {
+      final endedAt = DateTime.now().toUtc().toIso8601String();
       await supabase
           .from('shifts')
           .update({
             'status': 'closed',
-            'ended_at': DateTime.now().toIso8601String(),
+            'ended_at': endedAt,
             'closed_by': _activeCashierId,
           })
           .eq('id', shiftId);
+      await _offlineShiftRepository.upsertCachedShift({
+        'id': shiftId,
+        'status': 'closed',
+        'ended_at': endedAt,
+        'closed_by': _activeCashierId,
+      });
 
       if (!mounted) return;
       setState(() {
@@ -1279,6 +1692,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
       _showDropdownSnackbar('Shift closed.');
       await _showOpenShiftDialog();
     } catch (e) {
+      final endedAt = DateTime.now().toUtc().toIso8601String();
       await context.read<CartProvider>().enqueueOfflineShiftEvent(
         eventType: 'shift_close',
         label: 'shift_close #$shiftId',
@@ -1286,11 +1700,17 @@ extension CashierAppBarMethods on _ProductListScreenState {
           'shift': {
             'shift_id': shiftId,
             'cashier_id': _activeCashierId,
-            'ended_at': DateTime.now().toIso8601String(),
+            'ended_at': endedAt,
             'closed_by': _activeCashierId,
           },
         },
       );
+      await _offlineShiftRepository.upsertCachedShift({
+        'id': shiftId,
+        'status': 'closed',
+        'ended_at': endedAt,
+        'closed_by': _activeCashierId,
+      });
       if (!mounted) return;
       setState(() {
         _activeShiftId = null;

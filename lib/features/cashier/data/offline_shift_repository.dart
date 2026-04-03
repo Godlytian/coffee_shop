@@ -6,9 +6,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 class OfflineShiftRepository {
   static const String _dbName = 'offline_shifts.db';
-  static const int _dbVersion = 1;
+  static const int _dbVersion = 2;
   static const String _cashierTable = 'cached_cashiers';
   static const String _pendingShiftTable = 'offline_pending_shifts';
+  static const String _cachedShiftTable = 'cached_shifts';
 
   Database? _db;
 
@@ -38,6 +39,39 @@ class OfflineShiftRepository {
             payload_json TEXT NOT NULL
           )
         ''');
+
+        await db.execute('''
+          CREATE TABLE $_cachedShiftTable (
+            shift_id INTEGER PRIMARY KEY,
+            status TEXT,
+            branch_id TEXT,
+            started_at TEXT,
+            ended_at TEXT,
+            current_cashier_id INTEGER,
+            opened_by INTEGER,
+            closed_by INTEGER,
+            payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS $_cachedShiftTable (
+              shift_id INTEGER PRIMARY KEY,
+              status TEXT,
+              branch_id TEXT,
+              started_at TEXT,
+              ended_at TEXT,
+              current_cashier_id INTEGER,
+              opened_by INTEGER,
+              closed_by INTEGER,
+              payload_json TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+          ''');
+        }
       },
     );
   }
@@ -159,5 +193,84 @@ class OfflineShiftRepository {
       synced++;
     }
     return synced;
+  }
+
+  Future<void> replaceCachedShifts(List<Map<String, dynamic>> shifts) async {
+    await init();
+    await _database.transaction((txn) async {
+      await txn.delete(_cachedShiftTable);
+      for (final shift in shifts) {
+        final shiftId = (shift['id'] as num?)?.toInt();
+        if (shiftId == null) continue;
+        await txn.insert(_cachedShiftTable, {
+          'shift_id': shiftId,
+          'status': shift['status']?.toString(),
+          'branch_id': shift['branch_id']?.toString(),
+          'started_at': shift['started_at']?.toString(),
+          'ended_at': shift['ended_at']?.toString(),
+          'current_cashier_id': (shift['current_cashier_id'] as num?)?.toInt(),
+          'opened_by': (shift['opened_by'] as num?)?.toInt(),
+          'closed_by': (shift['closed_by'] as num?)?.toInt(),
+          'payload_json': jsonEncode(shift),
+          'updated_at': DateTime.now().toIso8601String(),
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+    });
+  }
+
+  Future<void> upsertCachedShift(Map<String, dynamic> shift) async {
+    await init();
+    final shiftId = (shift['id'] as num?)?.toInt();
+    if (shiftId == null) return;
+    final existingRows = await _database.query(
+      _cachedShiftTable,
+      columns: ['payload_json'],
+      where: 'shift_id = ?',
+      whereArgs: [shiftId],
+      limit: 1,
+    );
+    final existingPayload = existingRows.isEmpty
+        ? <String, dynamic>{}
+        : Map<String, dynamic>.from(
+            jsonDecode(existingRows.first['payload_json'] as String) as Map,
+          );
+    final merged = <String, dynamic>{...existingPayload, ...shift};
+    await _database.insert(_cachedShiftTable, {
+      'shift_id': shiftId,
+      'status': merged['status']?.toString(),
+      'branch_id': merged['branch_id']?.toString(),
+      'started_at': merged['started_at']?.toString(),
+      'ended_at': merged['ended_at']?.toString(),
+      'current_cashier_id': (merged['current_cashier_id'] as num?)?.toInt(),
+      'opened_by': (merged['opened_by'] as num?)?.toInt(),
+      'closed_by': (merged['closed_by'] as num?)?.toInt(),
+      'payload_json': jsonEncode(merged),
+      'updated_at': DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<Map<String, dynamic>>> getCachedShifts() async {
+    await init();
+    final rows = await _database.query(
+      _cachedShiftTable,
+      orderBy: 'started_at DESC',
+      limit: 200,
+    );
+    return rows
+        .map(
+          (row) => Map<String, dynamic>.from(
+            jsonDecode(row['payload_json'] as String) as Map,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<void> removeCachedShift(int shiftId) async {
+    await init();
+    await _database.delete(
+      _cachedShiftTable,
+      where: 'shift_id = ?',
+      whereArgs: [shiftId],
+    );
   }
 }

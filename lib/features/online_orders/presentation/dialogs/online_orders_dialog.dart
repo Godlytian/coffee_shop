@@ -405,6 +405,67 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     );
   }
 
+  Future<void> _printOrderFromAllOrdersModal({
+    required Map<String, dynamic> order,
+    required List<_OnlineOrderItem> items,
+  }) async {
+    final orderId = (order['id'] as num?)?.toInt();
+    if (orderId == null) {
+      throw Exception('Invalid order id');
+    }
+
+    final receiptLines = items
+        .map((item) {
+          final addons = <Map<String, dynamic>>[];
+          for (final group
+              in (item.modifiersData ?? <dynamic>[])
+                  .whereType<Map<String, dynamic>>()) {
+            final selected =
+                (group['selected_options'] as List<dynamic>? ?? <dynamic>[])
+                    .whereType<Map<String, dynamic>>();
+            for (final option in selected) {
+              final name = option['name']?.toString().trim();
+              if (name == null || name.isEmpty) continue;
+              final price = (option['price'] as num?)?.toDouble() ?? 0;
+              addons.add(<String, dynamic>{'name': name, 'price': price});
+            }
+          }
+
+          final lineSubtotal =
+              (item.product.price +
+                  _modifierExtraFromData(item.modifiersData)) *
+              item.quantity;
+          return <String, dynamic>{
+            'name': item.product.name,
+            'qty': item.quantity,
+            'subtotal': lineSubtotal,
+            'addons': addons,
+          };
+        })
+        .toList(growable: false);
+
+    final total =
+        (order['total_price'] as num?) ?? (order['total_amount'] as num?) ?? 0;
+    final paid =
+        (order['total_payment_received'] as num?) ??
+        (order['paid_amount'] as num?) ??
+        total;
+    final change = (order['change_amount'] as num?) ?? 0;
+    final notes = order['notes']?.toString() ?? '';
+
+    await ThermalPrinterService.instance.printPaymentReceipt(
+      orderId: orderId,
+      lines: receiptLines,
+      total: total,
+      paymentMethod: (order['payment_method'] ?? 'cash').toString(),
+      paid: paid,
+      change: change,
+      customerName: order['customer_name']?.toString(),
+      tableName: _tableNameFromNotes(notes),
+      orderType: order['type']?.toString(),
+    );
+  }
+
   Future<void> _showShiftOrderDetailsModal(Map<String, dynamic> order) async {
     final orderId = (order['id'] as num?)?.toInt();
     if (orderId == null) return;
@@ -810,6 +871,40 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                           FontWeight.bold,
                                                     ),
                                                   ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                OutlinedButton.icon(
+                                                  onPressed: () async {
+                                                    try {
+                                                      final orderItems =
+                                                          detailSnapshot.data ??
+                                                          await _fetchOrderItems(
+                                                            (selectedOrder['id']
+                                                                    as num)
+                                                                .toInt(),
+                                                            orderSnapshot:
+                                                                selectedOrder,
+                                                          );
+                                                      await _printOrderFromAllOrdersModal(
+                                                        order: selectedOrder,
+                                                        items: orderItems,
+                                                      );
+                                                      if (!mounted) return;
+                                                      _showDropdownSnackbar(
+                                                        'Order receipt printed.',
+                                                      );
+                                                    } catch (error) {
+                                                      if (!mounted) return;
+                                                      _showDropdownSnackbar(
+                                                        'Failed to print order: $error',
+                                                        isError: true,
+                                                      );
+                                                    }
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.print_outlined,
+                                                  ),
+                                                  label: const Text('Print'),
                                                 ),
                                                 const SizedBox(width: 8),
                                                 OutlinedButton.icon(

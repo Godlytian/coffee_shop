@@ -161,11 +161,18 @@ void backgroundSyncDispatcher() {
           }
 
           await queue.removePending(localTxnId);
+        } else if (eventType == 'shift_delete') {
+          final shift = Map<String, dynamic>.from(payload['shift'] as Map);
+          final shiftId = (shift['shift_id'] as num?)?.toInt();
+          if (shiftId == null) {
+            throw Exception('Missing shift_id for shift_delete');
+          }
+          await client.from('shifts').delete().eq('id', shiftId);
+
+          await queue.removePending(localTxnId);
         }
       }
-    } catch (_) {
-      // keep retrying on next schedule.
-    }
+    } catch (_) {}
 
     return true;
   });

@@ -352,6 +352,13 @@ class CartProvider extends ChangeNotifier {
             if (!closed) {
               throw Exception('Unable to apply shift_close to any open shift');
             }
+          } else if (eventType == 'shift_delete') {
+            final shift = Map<String, dynamic>.from(event['shift'] as Map);
+            final shiftId = (shift['shift_id'] as num?)?.toInt();
+            if (shiftId == null) {
+              throw Exception('Missing shift_id for shift_delete');
+            }
+            await supabase.from('shifts').delete().eq('id', shiftId);
           }
 
           await _offlineRepo.removePending(localTxnId);
