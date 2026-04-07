@@ -290,14 +290,30 @@ class LocalOrderStoreRepository {
     yield* _allController.stream;
   }
 
+  // Replace the existing watchActiveOrders() method with this:
+
   Stream<List<Map<String, dynamic>>> watchActiveOrders() {
     return watchAllOrders().map(
       (rows) => rows
-          .where(
-            (row) =>
-                row['status']?.toString() == 'active' &&
-                row['deleted_at'] == null,
-          )
+          .where((row) {
+            // 1. Ignore deleted orders
+            if (row['deleted_at'] != null) return false;
+
+            final status = row['status']?.toString();
+            final sessionStatus = row['session_status']?.toString();
+            final type = row['type']?.toString();
+
+            // 2. Already marked explicitly as active
+            if (status == 'active') return true;
+
+            // 3. QR Code / Dine-in flows (Open Tabs) that are waiting for payment/processing
+            if ((sessionStatus == 'open' || type == 'dine_in') &&
+                (status == 'pending' || status == 'paid')) {
+              return true;
+            }
+
+            return false;
+          })
           .toList(growable: false),
     );
   }

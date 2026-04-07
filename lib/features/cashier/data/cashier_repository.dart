@@ -22,11 +22,21 @@ class CashierRepository {
   }) async {
     final rows = await LocalOrderStoreRepository.instance.fetchAllOrders();
     return rows
-        .where(
-          (row) =>
-              row['status'] == 'active' &&
-              ((row['id'] as num?)?.toInt() ?? -1) != (excludedOrderId ?? -1),
-        )
+        .where((row) {
+          if (row['deleted_at'] != null) return false;
+
+          final status = row['status']?.toString();
+          final sessionStatus = row['session_status']?.toString();
+          final type = row['type']?.toString();
+
+          bool isActive =
+              status == 'active' ||
+              ((sessionStatus == 'open' || type == 'dine_in') &&
+                  (status == 'pending' || status == 'paid'));
+
+          return isActive &&
+              ((row['id'] as num?)?.toInt() ?? -1) != (excludedOrderId ?? -1);
+        })
         .toList(growable: false);
   }
 }
