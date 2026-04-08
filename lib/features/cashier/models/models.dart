@@ -1,3 +1,5 @@
+export 'cart_group.dart';
+export 'group_item.dart';
 
 class Product {
   final int id;

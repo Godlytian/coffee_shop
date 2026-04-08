@@ -685,10 +685,8 @@ extension CashierControllerMethods on _ProductListScreenState {
                   return;
                 }
 
-                if (value == 'backspace') {
-                  if (cashInput.isNotEmpty) {
-                    cashInput = cashInput.substring(0, cashInput.length - 1);
-                  }
+                if (value == 'exact') {
+                  cashInput = normalizedTotal.toString();
                   return;
                 }
 
@@ -845,10 +843,10 @@ extension CashierControllerMethods on _ProductListScreenState {
                             onTap: () => onCalculatorTap('0'),
                           ),
                           calculatorButton(
-                            label: '⌫',
-                            onTap: () => onCalculatorTap('backspace'),
-                            backgroundColor: Colors.blueGrey.shade100,
-                            foregroundColor: Colors.blueGrey.shade800,
+                            label: 'Uang Pas',
+                            onTap: () => onCalculatorTap('exact'),
+                            backgroundColor: Colors.green.shade100,
+                            foregroundColor: Colors.green.shade800,
                           ),
                         ],
                       ),

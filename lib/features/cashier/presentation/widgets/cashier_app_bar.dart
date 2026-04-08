@@ -366,13 +366,31 @@ extension CashierAppBarMethods on _ProductListScreenState {
                     buildGridItem(
                       icon: Icons.sync,
                       title: 'Sync Status',
-                      onTap: () async {
+                      onTap: () {
                         Navigator.of(dialogContext).pop();
-                        await _showSyncStatusScreen();
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const SyncScreen(),
+                          ),
+                        );
                       },
                     ),
 
-                    // 6. COURIER SETTINGS
+                    // 6. REPORTS
+                    buildGridItem(
+                      icon: Icons.bar_chart,
+                      title: 'Reports',
+                      onTap: () {
+                        Navigator.of(dialogContext).pop();
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const ReportsScreen(),
+                          ),
+                        );
+                      },
+                    ),
+
+                    // 7. COURIER SETTINGS
                     buildGridItem(
                       icon: Icons.local_shipping_outlined,
                       title: 'Courier Settings',
@@ -382,7 +400,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
                       },
                     ),
 
-                    // 7. REFRESH
+                    // 8. REFRESH
                     buildGridItem(
                       icon: Icons.refresh,
                       title: 'Refresh',
@@ -392,7 +410,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
                       },
                     ),
 
-                    // 8. PRINTER SETTINGS
+                    // 9. PRINTER SETTINGS
                     buildGridItem(
                       icon: Icons.print_outlined,
                       title: 'Printer Settings',

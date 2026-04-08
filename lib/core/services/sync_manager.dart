@@ -1,5 +1,6 @@
 import 'package:coffee_shop/core/services/local_order_item_store_repository.dart';
 import 'package:coffee_shop/core/services/local_order_store_repository.dart';
+import 'package:coffee_shop/core/services/local_cart_group_store_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SyncManager {
@@ -65,6 +66,11 @@ class SyncManager {
       newOrderId: newId,
     );
 
+    await LocalCartGroupStoreRepository.instance.reassignOrderId(
+      oldOrderId: oldId,
+      newOrderId: newId,
+    );
+
     final items = await LocalOrderItemStoreRepository.instance.fetchByOrderId(
       newId,
     );
@@ -76,6 +82,20 @@ class SyncManager {
       orderId: newId,
       syncStatus: 'synced',
     );
+
+    final groups = await LocalCartGroupStoreRepository.instance
+        .fetchGroupsByOrderId(newId);
+    if (groups.isNotEmpty) {
+      await _supabase.from('cart_groups').insert(groups);
+      final groupIds = groups
+          .map((group) => group['id'].toString())
+          .toList(growable: false);
+      final groupItems = await LocalCartGroupStoreRepository.instance
+          .fetchGroupItemsByGroupIds(groupIds);
+      if (groupItems.isNotEmpty) {
+        await _supabase.from('group_items').insert(groupItems);
+      }
+    }
   }
 
   Future<void> _processPendingUpdate(Map<String, dynamic> localOrder) async {
@@ -87,7 +107,6 @@ class SyncManager {
       await _supabase.from('orders').update(patch).eq('id', orderId);
     }
 
-    // Reflect the latest local item split composition without full order-row overwrite.
     final items = await LocalOrderItemStoreRepository.instance.fetchByOrderId(
       orderId,
     );
@@ -95,6 +114,25 @@ class SyncManager {
     if (items.isNotEmpty) {
       final itemPayload = items.map(_insertItemPayload).toList(growable: false);
       await _supabase.from('order_items').insert(itemPayload);
+    }
+
+    final groups = await LocalCartGroupStoreRepository.instance
+        .fetchGroupsByOrderId(orderId);
+    await _supabase.from('cart_groups').delete().eq('order_id', orderId);
+    if (groups.isNotEmpty) {
+      await _supabase.from('cart_groups').insert(groups);
+      final groupIds = groups
+          .map((group) => group['id'].toString())
+          .toList(growable: false);
+      final groupItems = await LocalCartGroupStoreRepository.instance
+          .fetchGroupItemsByGroupIds(groupIds);
+      await _supabase
+          .from('group_items')
+          .delete()
+          .inFilter('group_id', groupIds);
+      if (groupItems.isNotEmpty) {
+        await _supabase.from('group_items').insert(groupItems);
+      }
     }
 
     await LocalOrderStoreRepository.instance.markOrderSyncStatus(

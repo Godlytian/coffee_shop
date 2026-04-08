@@ -7,10 +7,12 @@ import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '/features/cashier/models/models.dart';
 import 'package:coffee_shop/core/services/local_order_store_repository.dart';
 import 'package:coffee_shop/core/services/local_order_item_store_repository.dart';
+import 'package:coffee_shop/core/services/local_cart_group_store_repository.dart';
 import '../data/offline_order_queue_repository.dart';
 
 class CartProvider extends ChangeNotifier {
@@ -19,6 +21,8 @@ class CartProvider extends ChangeNotifier {
   final Uuid _uuid = const Uuid();
 
   final Map<String, CartItem> _items = {};
+  final List<CartGroup> _cartGroups = <CartGroup>[];
+  final List<GroupItem> _groupItems = <GroupItem>[];
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool _isSyncing = false;
   bool _hasNetworkConnection = true;
@@ -33,6 +37,8 @@ class CartProvider extends ChangeNotifier {
   }
 
   Map<String, CartItem> get items => _items;
+  List<CartGroup> get cartGroups => List<CartGroup>.unmodifiable(_cartGroups);
+  List<GroupItem> get groupItems => List<GroupItem>.unmodifiable(_groupItems);
 
   int _pendingOfflineOrderCount = 0;
 
@@ -47,6 +53,8 @@ class CartProvider extends ChangeNotifier {
 
   Future<void> _bootstrapOffline() async {
     await _offlineRepo.init();
+    await LocalCartGroupStoreRepository.instance.init();
+    await _restoreCartSnapshot();
     await _refreshOfflineCounters();
     await refreshConnectionStatus();
 
@@ -68,6 +76,49 @@ class CartProvider extends ChangeNotifier {
 
   Future<void> _refreshOfflineCounters() async {
     _pendingOfflineOrderCount = await _offlineRepo.getPendingCount();
+  }
+
+  Future<void> _persistCartSnapshot() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'cart_snapshot',
+      jsonEncode({
+        'items': _items.values.map((item) => item.toJson()).toList(),
+        'groups': _cartGroups.map((group) => group.toJson()).toList(),
+        'group_items': _groupItems.map((item) => item.toJson()).toList(),
+      }),
+    );
+  }
+
+  Future<void> _restoreCartSnapshot() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('cart_snapshot');
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final itemList = (decoded['items'] as List<dynamic>? ?? <dynamic>[]);
+      _items.clear();
+      for (final rawItem in itemList.whereType<Map<String, dynamic>>()) {
+        final item = CartItem.fromJson(rawItem);
+        final key = _buildCartLineKey(item, item.modifiers, item.modifiersData);
+        _items[key] = item;
+      }
+      _cartGroups
+        ..clear()
+        ..addAll(
+          (decoded['groups'] as List<dynamic>? ?? <dynamic>[])
+              .whereType<Map<String, dynamic>>()
+              .map(CartGroup.fromJson),
+        );
+      _groupItems
+        ..clear()
+        ..addAll(
+          (decoded['group_items'] as List<dynamic>? ?? <dynamic>[])
+              .whereType<Map<String, dynamic>>()
+              .map(GroupItem.fromJson),
+        );
+      _recalculateTotalAmount();
+    } catch (_) {}
   }
 
   bool _isTransientError(Object error) {
@@ -557,6 +608,48 @@ class CartProvider extends ChangeNotifier {
       await supabase.from('order_items').insert(orderItems);
     }
 
+    final cartGroups = (payload['cart_groups'] as List<dynamic>? ?? <dynamic>[])
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
+    final groupItems = (payload['group_items'] as List<dynamic>? ?? <dynamic>[])
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
+
+    if (cartGroups.isNotEmpty) {
+      final itemIdByProduct = <int, int>{};
+      final insertedRows = await supabase
+          .from('order_items')
+          .select('id, product_id')
+          .eq('order_id', resolvedOrderId);
+      for (final row
+          in (insertedRows as List).whereType<Map<String, dynamic>>()) {
+        final productId = (row['product_id'] as num?)?.toInt();
+        final id = (row['id'] as num?)?.toInt();
+        if (productId != null && id != null) itemIdByProduct[productId] = id;
+      }
+
+      final syncedGroups = cartGroups
+          .map((group) => {...group, 'order_id': resolvedOrderId})
+          .toList(growable: false);
+      await supabase.from('cart_groups').insert(syncedGroups);
+
+      final syncedGroupItems = groupItems
+          .map((item) {
+            final tempOrderItemId = (item['order_item_id'] as num?)?.toInt();
+            final mappedOrderItemId = tempOrderItemId == null
+                ? null
+                : itemIdByProduct[tempOrderItemId] ?? tempOrderItemId;
+            return {...item, 'order_item_id': mappedOrderItemId};
+          })
+          .where((row) => row['order_item_id'] != null)
+          .toList(growable: false);
+      if (syncedGroupItems.isNotEmpty) {
+        await supabase.from('group_items').insert(syncedGroupItems);
+      }
+    }
+
     final verifyRows = await supabase
         .from('order_items')
         .select('id')
@@ -602,6 +695,55 @@ class CartProvider extends ChangeNotifier {
     _totalAmount = total;
   }
 
+  void createGroup(String name, {int orderId = 0}) {
+    final group = CartGroup(
+      id: _uuid.v4(),
+      orderId: orderId,
+      groupIndex: _cartGroups.length + 1,
+      groupName: name.trim().isEmpty
+          ? 'Group ${_cartGroups.length + 1}'
+          : name.trim(),
+    );
+    _cartGroups.add(group);
+    _persistCartSnapshot();
+    notifyListeners();
+  }
+
+  void assignItemToGroup(CartItem item, String groupId, int qty) {
+    if (qty <= 0) return;
+    final exists = _items.values.any((line) => line.cartId == item.cartId);
+    if (!exists) return;
+    final groupItem = GroupItem(
+      id: _uuid.v4(),
+      groupId: groupId,
+      orderItemId: item.id,
+      assignedQty: qty,
+    );
+    _groupItems.add(groupItem);
+    _persistCartSnapshot();
+    notifyListeners();
+  }
+
+  void removeGroup(String groupId) {
+    _cartGroups.removeWhere((group) => group.id == groupId);
+    _groupItems.removeWhere((item) => item.groupId == groupId);
+    _persistCartSnapshot();
+    notifyListeners();
+  }
+
+  void processGroupPayment(String groupId, double amount, {int? cashierId}) {
+    final index = _cartGroups.indexWhere((group) => group.id == groupId);
+    if (index < 0) return;
+    _cartGroups[index] = _cartGroups[index].copyWith(
+      paymentStatus: 'paid',
+      amountPaid: amount,
+      closedAt: DateTime.now().toIso8601String(),
+      closedBy: cashierId,
+    );
+    _persistCartSnapshot();
+    notifyListeners();
+  }
+
   void addItem(
     Product product, {
     required int quantity,
@@ -636,6 +778,7 @@ class CartProvider extends ChangeNotifier {
     }
 
     _recalculateTotalAmount();
+    _persistCartSnapshot();
     notifyListeners();
   }
 
@@ -672,12 +815,14 @@ class CartProvider extends ChangeNotifier {
     }
 
     _recalculateTotalAmount();
+    _persistCartSnapshot();
     notifyListeners();
   }
 
   void removeItem(String key) {
     _items.remove(key);
     _recalculateTotalAmount();
+    _persistCartSnapshot();
     notifyListeners();
   }
 
@@ -850,6 +995,8 @@ class CartProvider extends ChangeNotifier {
       'queued_at': DateTime.now().toIso8601String(),
       'order': mergedOrder,
       'items': latestItems,
+      'cart_groups': _cartGroups.map((group) => group.toJson()).toList(),
+      'group_items': _groupItems.map((item) => item.toJson()).toList(),
     };
 
     await _offlineRepo.enqueue(updatedPayload);
@@ -980,6 +1127,14 @@ class CartProvider extends ChangeNotifier {
       await LocalOrderItemStoreRepository.instance.replaceForOrder(
         orderId: orderId,
         rows: localOrderItems,
+      );
+
+      await LocalCartGroupStoreRepository.instance.replaceForOrder(
+        orderId: orderId,
+        groups: _cartGroups
+            .map((group) => group.toJson()..['order_id'] = orderId)
+            .toList(),
+        groupItems: _groupItems.map((item) => item.toJson()).toList(),
       );
     }
     if (hasCartItems) {
@@ -1163,6 +1318,8 @@ class CartProvider extends ChangeNotifier {
         'queued_at': DateTime.now().toIso8601String(),
         'order': orderPayload,
         'items': orderItems,
+        'cart_groups': _cartGroups.map((group) => group.toJson()).toList(),
+        'group_items': _groupItems.map((item) => item.toJson()).toList(),
       };
       await _offlineRepo.enqueue(queuePayload);
       await _offlineRepo.addLog(
@@ -1176,6 +1333,13 @@ class CartProvider extends ChangeNotifier {
       await LocalOrderItemStoreRepository.instance.replaceForOrder(
         orderId: offlineOrderId,
         rows: localOrderItems,
+      );
+      await LocalCartGroupStoreRepository.instance.replaceForOrder(
+        orderId: offlineOrderId,
+        groups: _cartGroups
+            .map((group) => group.toJson()..['order_id'] = offlineOrderId)
+            .toList(),
+        groupItems: _groupItems.map((item) => item.toJson()).toList(),
       );
       await _refreshOfflineCounters();
       notifyListeners();
@@ -1194,7 +1358,10 @@ class CartProvider extends ChangeNotifier {
 
   void clearCart() {
     _items.clear();
+    _cartGroups.clear();
+    _groupItems.clear();
     _totalAmount = 0;
+    _persistCartSnapshot();
     notifyListeners();
   }
 }

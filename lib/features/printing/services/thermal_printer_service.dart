@@ -231,6 +231,57 @@ class ThermalPrinterService {
     await _printer.paperCut();
   }
 
+  String generateReceiptPreviewText({
+    required int orderId,
+    required List<Map<String, dynamic>> lines,
+    required num total,
+    required String paymentMethod,
+    required num paid,
+    required num change,
+    String? customerName,
+    String? tableName,
+    String? orderType,
+  }) {
+    final buffer = StringBuffer();
+    final orderIdStr = orderId.toString();
+    final shortOrderId = orderIdStr.length >= 3
+        ? orderIdStr.substring(orderIdStr.length - 3)
+        : orderIdStr.padLeft(3, '0');
+
+    buffer.writeln('ULUN');
+    buffer.writeln('ORDER #$shortOrderId');
+    buffer.writeln(DateTime.now().toString().substring(0, 16));
+    buffer.writeln('--------------------------------');
+    if (customerName != null && customerName.trim().isNotEmpty) {
+      buffer.writeln('Customer: $customerName');
+    }
+    if (tableName != null && tableName.trim().isNotEmpty) {
+      buffer.writeln('Table: $tableName');
+    }
+    if (orderType != null && orderType.trim().isNotEmpty) {
+      buffer.writeln('Order Type: $orderType');
+    }
+
+    buffer.writeln('Item(s):');
+    for (final line in lines) {
+      final name = line['name']?.toString() ?? '-';
+      final qty = (line['qty'] as num?)?.toInt() ?? 1;
+      final subtotal = (line['subtotal'] as num?) ?? 0;
+      buffer.writeln('$qty $name');
+      buffer.writeln('  -> ${_formatPrice(subtotal)}');
+    }
+
+    buffer.writeln('--------------------------------');
+    buffer.writeln('Total: ${_formatPrice(total)}');
+    buffer.writeln('Payment: ${paymentMethod.toUpperCase()}');
+    if (paymentMethod.toLowerCase() != 'qris') {
+      buffer.writeln('Paid: ${_formatPrice(paid)}');
+      buffer.writeln('Change: ${_formatPrice(change)}');
+    }
+    buffer.writeln('Thank You');
+    return buffer.toString();
+  }
+
   Future<void> printTestReceipt({required String printerName}) async {
     if (!(await isConnected)) {
       throw Exception('Printer not connected');

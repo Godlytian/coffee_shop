@@ -34,11 +34,14 @@ class _PrinterSettingsDialogState extends State<PrinterSettingsDialog> {
   bool _isLoading = true;
   bool _isConnected = false;
   String? _loadError;
+  bool _autoPrintReceipt = true;
+  bool _showPrintPopupAfterPayment = true;
 
   @override
   void initState() {
     super.initState();
     _initPrinter();
+    _loadPreferences();
   }
 
   Future<bool> _ensureLocationServiceEnabled() async {
@@ -189,6 +192,25 @@ class _PrinterSettingsDialogState extends State<PrinterSettingsDialog> {
     }
   }
 
+  Future<void> _loadPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _autoPrintReceipt = prefs.getBool('auto_print_receipt') ?? true;
+      _showPrintPopupAfterPayment =
+          prefs.getBool('show_print_popup_after_payment') ?? true;
+    });
+  }
+
+  Future<void> _savePreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('auto_print_receipt', _autoPrintReceipt);
+    await prefs.setBool(
+      'show_print_popup_after_payment',
+      _showPrintPopupAfterPayment,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -287,6 +309,33 @@ class _PrinterSettingsDialogState extends State<PrinterSettingsDialog> {
                   ),
                 ],
               ),
+            const SizedBox(height: 12),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Auto-print receipt after payment'),
+              value: _autoPrintReceipt,
+              onChanged: (value) async {
+                setState(() {
+                  _autoPrintReceipt = value;
+                  if (_autoPrintReceipt) {
+                    _showPrintPopupAfterPayment = false;
+                  }
+                });
+                await _savePreferences();
+              },
+            ),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Show print popup after payment'),
+              subtitle: const Text('Only active when auto-print is disabled'),
+              value: _showPrintPopupAfterPayment,
+              onChanged: _autoPrintReceipt
+                  ? null
+                  : (value) async {
+                      setState(() => _showPrintPopupAfterPayment = value);
+                      await _savePreferences();
+                    },
+            ),
           ],
         ),
       ),

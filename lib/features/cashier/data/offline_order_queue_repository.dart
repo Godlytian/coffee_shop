@@ -5,11 +5,12 @@ import 'package:sqflite/sqflite.dart';
 
 class OfflineOrderQueueRepository {
   static const String _dbName = 'offline_orders.db';
-  static const int _dbVersion = 3;
+  static const int _dbVersion = 4;
 
   static const String pendingTable = 'offline_pending_orders';
   static const String failedTable = 'offline_failed_orders';
   static const String logsTable = 'offline_sync_logs';
+  static const String syncLogsTable = 'sync_logs';
 
   Database? _db;
 
@@ -39,6 +40,17 @@ class OfflineOrderQueueRepository {
             failed_at TEXT NOT NULL,
             failure_reason TEXT,
             payload_json TEXT NOT NULL
+          )
+        ''');
+
+        await db.execute('''
+          CREATE TABLE $syncLogsTable (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            action TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            payload_json TEXT
           )
         ''');
 
@@ -80,6 +92,19 @@ class OfflineOrderQueueRepository {
           await db.execute(
             'ALTER TABLE $logsTable ADD COLUMN payload_json TEXT',
           );
+        }
+
+        if (oldVersion < 4) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS $syncLogsTable (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              timestamp TEXT NOT NULL,
+              action TEXT NOT NULL,
+              status TEXT NOT NULL,
+              error_message TEXT,
+              payload_json TEXT
+            )
+          ''');
         }
       },
     );
@@ -152,19 +177,34 @@ class OfflineOrderQueueRepository {
     String? localTxnId,
     Map<String, dynamic>? payload,
   }) async {
+    final now = DateTime.now().toIso8601String();
+    final encodedPayload = payload == null ? null : jsonEncode(payload);
     await _database.insert(logsTable, {
-      'created_at': DateTime.now().toIso8601String(),
+      'created_at': now,
       'level': level,
       'message': message,
       'local_txn_id': localTxnId,
-      'payload_json': payload == null ? null : jsonEncode(payload),
+      'payload_json': encodedPayload,
+    });
+
+    final normalizedStatus = switch (level.toLowerCase()) {
+      'error' => 'FAILED',
+      'warning' => 'PENDING',
+      _ => 'SUCCESS',
+    };
+    await _database.insert(syncLogsTable, {
+      'timestamp': now,
+      'action': message,
+      'status': normalizedStatus,
+      'error_message': level.toLowerCase() == 'error' ? message : null,
+      'payload_json': encodedPayload,
     });
   }
 
   Future<List<Map<String, dynamic>>> getSyncLogs({int limit = 200}) async {
     final rows = await _database.query(
       logsTable,
-      orderBy: 'id ASC',
+      orderBy: 'id DESC',
       limit: limit,
     );
     return rows
@@ -187,6 +227,7 @@ class OfflineOrderQueueRepository {
 
   Future<void> clearSyncLogs() async {
     await _database.delete(logsTable);
+    await _database.delete(syncLogsTable);
   }
 
   Future<void> retryFailed(String localTxnId) async {

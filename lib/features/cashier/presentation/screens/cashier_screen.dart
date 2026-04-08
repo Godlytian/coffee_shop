@@ -14,6 +14,9 @@ import 'package:coffee_shop/features/cashier/providers/cart_provider.dart';
 import 'package:coffee_shop/features/cashier/data/offline_shift_repository.dart';
 import 'package:coffee_shop/features/printing/presentation/dialogs/printer_settings_dialog.dart';
 import 'package:coffee_shop/features/printing/services/thermal_printer_service.dart';
+import 'package:coffee_shop/features/reports/presentation/screens/reports_screen.dart';
+import 'package:coffee_shop/features/reports/presentation/sync_screen.dart';
+import 'package:coffee_shop/features/cashier/presentation/screens/split_bill_screen.dart';
 import 'package:coffee_shop/core/services/order_notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -193,6 +196,7 @@ class _ProductListScreenState extends State<ProductListScreen>
   final Set<int> _onlineOrderItemPreviewLoading = <int>{};
 
   Timer? _cashierHeartbeatTimer;
+  Timer? _menuSearchDebounceTimer;
   bool _isOnlineOrdersEnabled = true;
   DateTime? _cashierLastSeenAt;
 
@@ -270,6 +274,7 @@ class _ProductListScreenState extends State<ProductListScreen>
     await _sendCashierHeartbeat();
 
     _cashierHeartbeatTimer?.cancel();
+    _menuSearchDebounceTimer?.cancel();
     _cashierHeartbeatTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       unawaited(_sendCashierHeartbeat());
     });
@@ -353,6 +358,7 @@ class _ProductListScreenState extends State<ProductListScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cashierHeartbeatTimer?.cancel();
+    _menuSearchDebounceTimer?.cancel();
     _cartProviderSubscription?.removeListener(_handleConnectionStateChange);
     _onlineOrderBadgeSubscription?.cancel();
     _onlinePaidOrdersCountNotifier.dispose();
@@ -582,7 +588,7 @@ class _ProductListScreenState extends State<ProductListScreen>
       body: ValueListenableBuilder<bool>(
         valueListenable: _isCartExpandedNotifier,
         builder: (context, isCartExpanded, child) {
-          final dividerWidth = isCartExpanded ? 0.0 : 36.0;
+          final dividerWidth = 36.0;
           final totalFlexWidth = max(
             MediaQuery.sizeOf(context).width - dividerWidth,
             0.0,
@@ -645,8 +651,14 @@ class _ProductListScreenState extends State<ProductListScreen>
                                       isDense: true,
                                     ),
                                     onChanged: (value) {
-                                      _menuSearchQuery = value.trim();
-                                      unawaited(_refreshMenuProjection());
+                                      _menuSearchDebounceTimer?.cancel();
+                                      _menuSearchDebounceTimer = Timer(
+                                        const Duration(milliseconds: 300),
+                                        () {
+                                          _menuSearchQuery = value.trim();
+                                          unawaited(_refreshMenuProjection());
+                                        },
+                                      );
                                     },
                                   ),
                                 ),
@@ -824,16 +836,13 @@ class _ProductListScreenState extends State<ProductListScreen>
                         ),
                       ),
               ),
-              // 2. Divider column changed back to AnimatedContainer
               AnimatedContainer(
                 duration: panelAnimationDuration,
                 curve: Curves.easeOutCubic,
                 width: dividerWidth,
-                child: dividerWidth <= 0
-                    ? const SizedBox.shrink()
-                    : _buildMenuCartDivider(),
+                child: _buildMenuCartDivider(),
               ),
-              // 3. Cart column changed back to AnimatedContainer
+
               AnimatedContainer(
                 duration: panelAnimationDuration,
                 curve: Curves.easeOutCubic,
@@ -843,8 +852,9 @@ class _ProductListScreenState extends State<ProductListScreen>
                     duration: panelFadeDuration,
                     curve: Curves.easeOutCubic,
                     opacity: isCartExpanded ? 1 : 0.96,
+                    // 3. Inject your new widget here!
                     child: isCartExpanded
-                        ? _buildSplitBoardBody()
+                        ? const SplitBillScreen()
                         : _buildRegularCartBody(),
                   ),
                 ),
@@ -1171,7 +1181,7 @@ class _ProductListScreenState extends State<ProductListScreen>
         elevation: 2,
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
-          onTap: _toggleCartExpanded,
+          onTap: _toggleCartExpanded, // <-- CHANGED HERE
           child: Icon(
             _isCartExpanded ? Icons.chevron_right : Icons.chevron_left,
             size: 20,
@@ -1181,14 +1191,17 @@ class _ProductListScreenState extends State<ProductListScreen>
     );
   }
 
-  void _toggleCartExpanded() {
-    final shouldExpand = !_isCartExpandedNotifier.value;
-    _isCartExpandedNotifier.value = shouldExpand;
-    _resetSplitBoardState();
+  // void _toggleCartExpanded() {
+  //   final shouldExpand = !_isCartExpandedNotifier.value;
+  //   _isCartExpandedNotifier.value = shouldExpand;
+  //   _resetSplitBoardState();
 
-    if (!shouldExpand) return;
-    final cart = context.read<CartProvider>();
-    _ensureSplitBoardSeed(cart);
+  //   if (!shouldExpand) return;
+  //   final cart = context.read<CartProvider>();
+  //   _ensureSplitBoardSeed(cart);
+  // }
+  void _toggleCartExpanded() {
+    _isCartExpandedNotifier.value = !_isCartExpandedNotifier.value;
   }
 
   Widget _buildMenuCartDivider() {
@@ -1675,16 +1688,83 @@ class _ProductListScreenState extends State<ProductListScreen>
       }
 
       if ((paidOrderId ?? 0) > 0) {
-        await ThermalPrinterService.instance.printPaymentReceipt(
-          orderId: paidOrderId!,
-          lines: receiptItems,
-          total: totalBeforeSubmit,
-          paymentMethod: payment.method,
-          paid: payment.totalPaymentReceived,
-          change: payment.changeAmount,
-          customerName: _customerName,
-          tableName: _tableName,
-        );
+        final prefs = await SharedPreferences.getInstance();
+        final isAutoPrint = prefs.getBool('auto_print_receipt') ?? true;
+        final shouldShowPopup =
+            prefs.getBool('show_print_popup_after_payment') ?? true;
+        if (isAutoPrint) {
+          await ThermalPrinterService.instance.printPaymentReceipt(
+            orderId: paidOrderId!,
+            lines: receiptItems,
+            total: totalBeforeSubmit,
+            paymentMethod: payment.method,
+            paid: payment.totalPaymentReceived,
+            change: payment.changeAmount,
+            customerName: _customerName,
+            tableName: _tableName,
+          );
+        } else if (mounted && shouldShowPopup) {
+          final preview = ThermalPrinterService.instance
+              .generateReceiptPreviewText(
+                orderId: paidOrderId!,
+                lines: receiptItems,
+                total: totalBeforeSubmit,
+                paymentMethod: payment.method,
+                paid: payment.totalPaymentReceived,
+                change: payment.changeAmount,
+                customerName: _customerName,
+                tableName: _tableName,
+              );
+          final shouldPrint = await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('Payment Successful. Print Receipt?'),
+              content: Container(
+                width: 360,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: SingleChildScrollView(
+                  child: Text(
+                    preview,
+                    style: const TextStyle(fontFamily: 'Courier', fontSize: 12),
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Skip'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Print'),
+                ),
+              ],
+            ),
+          );
+          if (shouldPrint == true) {
+            await ThermalPrinterService.instance.printPaymentReceipt(
+              orderId: paidOrderId,
+              lines: receiptItems,
+              total: totalBeforeSubmit,
+              paymentMethod: payment.method,
+              paid: payment.totalPaymentReceived,
+              change: payment.changeAmount,
+              customerName: _customerName,
+              tableName: _tableName,
+            );
+          }
+        }
       }
     } catch (error) {
       if (!mounted) return;
