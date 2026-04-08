@@ -203,6 +203,19 @@ extension CashierControllerMethods on _ProductListScreenState {
           'discount_total': 0,
         })
         .eq('id', orderId);
+
+    try {
+      final latest = await supabase
+          .from('orders')
+          .select()
+          .eq('id', orderId)
+          .maybeSingle();
+      if (latest != null) {
+        await LocalOrderStoreRepository.instance.upsertOrder(
+          Map<String, dynamic>.from(latest),
+        );
+      }
+    } catch (_) {}
   }
 
   Future<int> _generateOfflineDailyUniqueOrderId() async {

@@ -11,23 +11,30 @@ class OrderSyncService {
   RealtimeChannel? _channel;
   bool _started = false;
 
+  Future<void> forceReconcile() async {
+    await LocalOrderStoreRepository.instance.init();
+    try {
+      final rows = await supabase
+          .from('orders')
+          .select()
+          .isFilter('deleted_at', null)
+          .order('created_at', ascending: false);
+      final mapped = rows
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: false);
+      await LocalOrderStoreRepository.instance.reconcileOrders(mapped);
+    } catch (e) {
+      print('Order Sync forceReconcile error: $e');
+    }
+  }
+
   Future<void> start() async {
     if (_started) return;
     _started = true;
     await LocalOrderStoreRepository.instance.init();
 
     try {
-      final initialData = await supabase
-          .from('orders')
-          .select()
-          .isFilter('deleted_at', null)
-          .order('created_at', ascending: false);
-
-      final mappedInitial = initialData
-          .map((row) => Map<String, dynamic>.from(row))
-          .toList(growable: false);
-
-      await LocalOrderStoreRepository.instance.reconcileOrders(mappedInitial);
+      await forceReconcile();
 
       _channel = supabase.channel('public:orders');
 

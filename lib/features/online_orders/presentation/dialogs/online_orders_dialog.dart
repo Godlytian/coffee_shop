@@ -615,7 +615,7 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     int? selectedOrderId;
     int? selectedShiftId = initialShiftId;
 
-    final offlinePending = await context
+    var offlinePending = await context
         .read<CartProvider>()
         .getPendingOfflineOrders();
     Future<List<Map<String, dynamic>>> shiftRowsFuture =
@@ -626,6 +626,14 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            Future<void> refreshDialogData() async {
+              offlinePending = await context
+                  .read<CartProvider>()
+                  .getPendingOfflineOrders();
+              shiftRowsFuture = _fetchShiftRowsForReport();
+              setDialogState(() {});
+            }
+
             return Dialog(
               insetPadding: const EdgeInsets.all(24),
               child: SizedBox(
@@ -799,76 +807,80 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                             ),
                             child: filtered.isEmpty
                                 ? const Center(child: Text('No orders found.'))
-                                : ListView(
-                                    padding: const EdgeInsets.all(12),
-                                    children: grouped.entries.expand((entry) {
-                                      final header = Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 8,
-                                        ),
-                                        child: Text(
-                                          '${entry.key}:',
-                                          style: TextStyle(
-                                            color: Colors.blue.shade700,
-                                            fontWeight: FontWeight.w700,
+                                : RefreshIndicator(
+                                    onRefresh: refreshDialogData,
+                                    child: ListView(
+                                      padding: const EdgeInsets.all(12),
+                                      children: grouped.entries.expand((entry) {
+                                        final header = Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 8,
                                           ),
-                                        ),
-                                      );
-
-                                      final tiles = entry.value.map((order) {
-                                        final orderId = order['id'];
-                                        final customer =
-                                            order['customer_name']
-                                                    ?.toString()
-                                                    .trim()
-                                                    .isNotEmpty ==
-                                                true
-                                            ? order['customer_name']
-                                            : 'Guest';
-                                        final status = (order['status'] ?? '-')
-                                            .toString();
-                                        final source =
-                                            (order['order_source'] ?? '-')
-                                                .toString();
-                                        final total =
-                                            (order['total_price'] as num?) ??
-                                            (order['total_amount'] as num?) ??
-                                            0;
-                                        final orderTime = _onlineTimeLabel(
-                                          order['created_at'],
-                                        );
-                                        final isSelected =
-                                            (order['id'] as num?)?.toInt() ==
-                                            selectedOrderId;
-                                        return Card(
-                                          elevation: 0,
-                                          margin: const EdgeInsets.symmetric(
-                                            vertical: 4,
-                                          ),
-                                          color: isSelected
-                                              ? Colors.blue.withOpacity(0.08)
-                                              : null,
-                                          child: ListTile(
-                                            onTap: () => setDialogState(() {
-                                              selectedOrderId =
-                                                  (order['id'] as num?)
-                                                      ?.toInt();
-                                            }),
-                                            title: Text(
-                                              'Order #$orderId • $customer',
-                                            ),
-                                            subtitle: Text(
-                                              '${status.toUpperCase()} • ${source.toUpperCase()} • ${_formatRupiah(total)} • $orderTime',
-                                            ),
-                                            trailing: const Icon(
-                                              Icons.chevron_right,
+                                          child: Text(
+                                            '${entry.key}:',
+                                            style: TextStyle(
+                                              color: Colors.blue.shade700,
+                                              fontWeight: FontWeight.w700,
                                             ),
                                           ),
                                         );
-                                      }).toList();
 
-                                      return [header, ...tiles];
-                                    }).toList(),
+                                        final tiles = entry.value.map((order) {
+                                          final orderId = order['id'];
+                                          final customer =
+                                              order['customer_name']
+                                                      ?.toString()
+                                                      .trim()
+                                                      .isNotEmpty ==
+                                                  true
+                                              ? order['customer_name']
+                                              : 'Guest';
+                                          final status =
+                                              (order['status'] ?? '-')
+                                                  .toString();
+                                          final source =
+                                              (order['order_source'] ?? '-')
+                                                  .toString();
+                                          final total =
+                                              (order['total_price'] as num?) ??
+                                              (order['total_amount'] as num?) ??
+                                              0;
+                                          final orderTime = _onlineTimeLabel(
+                                            order['created_at'],
+                                          );
+                                          final isSelected =
+                                              (order['id'] as num?)?.toInt() ==
+                                              selectedOrderId;
+                                          return Card(
+                                            elevation: 0,
+                                            margin: const EdgeInsets.symmetric(
+                                              vertical: 4,
+                                            ),
+                                            color: isSelected
+                                                ? Colors.blue.withOpacity(0.08)
+                                                : null,
+                                            child: ListTile(
+                                              onTap: () => setDialogState(() {
+                                                selectedOrderId =
+                                                    (order['id'] as num?)
+                                                        ?.toInt();
+                                              }),
+                                              title: Text(
+                                                'Order #$orderId • $customer',
+                                              ),
+                                              subtitle: Text(
+                                                '${status.toUpperCase()} • ${source.toUpperCase()} • ${_formatRupiah(total)} • $orderTime',
+                                              ),
+                                              trailing: const Icon(
+                                                Icons.chevron_right,
+                                              ),
+                                            ),
+                                          );
+                                        }).toList();
+
+                                        return [header, ...tiles];
+                                      }).toList(),
+                                    ),
                                   ),
                           ),
                           Expanded(
@@ -1175,88 +1187,93 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                         ? const Center(
                                             child: Text('No shifts found.'),
                                           )
-                                        : ListView.builder(
-                                            padding: const EdgeInsets.all(12),
-                                            itemCount: shifts.length,
-                                            itemBuilder: (_, index) {
-                                              final shift = shifts[index];
-                                              final shiftId = _toInt(
-                                                shift['id'],
-                                              );
-                                              final isSelected =
-                                                  shiftId == selectedShiftId;
-                                              final orderCount = rawOrders
-                                                  .where((order) {
-                                                    final status =
-                                                        (order['status'] ?? '')
-                                                            .toString();
-                                                    final isDeleted =
-                                                        order['deleted_at'] !=
-                                                        null;
-                                                    return _toInt(
-                                                              order['shift_id'],
-                                                            ) ==
-                                                            shiftId &&
-                                                        status ==
-                                                            OrderStatus
-                                                                .completed &&
-                                                        !isDeleted;
-                                                  })
-                                                  .length;
-                                              final shiftOrderTotal = rawOrders
-                                                  .where((order) {
-                                                    final status =
-                                                        (order['status'] ?? '')
-                                                            .toString();
-                                                    final isDeleted =
-                                                        order['deleted_at'] !=
-                                                        null;
-                                                    return _toInt(
-                                                              order['shift_id'],
-                                                            ) ==
-                                                            shiftId &&
-                                                        status ==
-                                                            OrderStatus
-                                                                .completed &&
-                                                        !isDeleted;
-                                                  })
-                                                  .fold<num>(
-                                                    0,
-                                                    (sum, order) =>
-                                                        sum +
-                                                        ((order['total_price']
-                                                                as num?) ??
-                                                            (order['total_amount']
-                                                                as num?) ??
-                                                            0),
-                                                  );
-                                              return Card(
-                                                margin:
-                                                    const EdgeInsets.symmetric(
-                                                      vertical: 4,
+                                        : RefreshIndicator(
+                                            onRefresh: refreshDialogData,
+                                            child: ListView.builder(
+                                              padding: const EdgeInsets.all(12),
+                                              itemCount: shifts.length,
+                                              itemBuilder: (_, index) {
+                                                final shift = shifts[index];
+                                                final shiftId = _toInt(
+                                                  shift['id'],
+                                                );
+                                                final isSelected =
+                                                    shiftId == selectedShiftId;
+                                                final orderCount = rawOrders
+                                                    .where((order) {
+                                                      final status =
+                                                          (order['status'] ??
+                                                                  '')
+                                                              .toString();
+                                                      final isDeleted =
+                                                          order['deleted_at'] !=
+                                                          null;
+                                                      return _toInt(
+                                                                order['shift_id'],
+                                                              ) ==
+                                                              shiftId &&
+                                                          status ==
+                                                              OrderStatus
+                                                                  .completed &&
+                                                          !isDeleted;
+                                                    })
+                                                    .length;
+                                                final shiftOrderTotal = rawOrders
+                                                    .where((order) {
+                                                      final status =
+                                                          (order['status'] ??
+                                                                  '')
+                                                              .toString();
+                                                      final isDeleted =
+                                                          order['deleted_at'] !=
+                                                          null;
+                                                      return _toInt(
+                                                                order['shift_id'],
+                                                              ) ==
+                                                              shiftId &&
+                                                          status ==
+                                                              OrderStatus
+                                                                  .completed &&
+                                                          !isDeleted;
+                                                    })
+                                                    .fold<num>(
+                                                      0,
+                                                      (sum, order) =>
+                                                          sum +
+                                                          ((order['total_price']
+                                                                  as num?) ??
+                                                              (order['total_amount']
+                                                                  as num?) ??
+                                                              0),
+                                                    );
+                                                return Card(
+                                                  margin:
+                                                      const EdgeInsets.symmetric(
+                                                        vertical: 4,
+                                                      ),
+                                                  color: isSelected
+                                                      ? Colors.blue.withOpacity(
+                                                          0.08,
+                                                        )
+                                                      : null,
+                                                  child: ListTile(
+                                                    onTap: shiftId == null
+                                                        ? null
+                                                        : () => setDialogState(
+                                                            () =>
+                                                                selectedShiftId =
+                                                                    shiftId,
+                                                          ),
+                                                    title: Text(
+                                                      'Shift #${shift['id']}',
                                                     ),
-                                                color: isSelected
-                                                    ? Colors.blue.withOpacity(
-                                                        0.08,
-                                                      )
-                                                    : null,
-                                                child: ListTile(
-                                                  onTap: shiftId == null
-                                                      ? null
-                                                      : () => setDialogState(
-                                                          () =>
-                                                              selectedShiftId =
-                                                                  shiftId,
-                                                        ),
-                                                  title: Text(
-                                                    'Shift #${shift['id']}',
+                                                    subtitle: Text(
+                                                      '${_shiftDateTimeRangeLabel(shift['started_at'], shift['ended_at'])}\nOrders: $orderCount • Total: ${_formatRupiah(shiftOrderTotal)}',
+                                                    ),
                                                   ),
-                                                  subtitle: Text(
-                                                    '${_shiftDateTimeRangeLabel(shift['started_at'], shift['ended_at'])}\nOrders: $orderCount • Total: ${_formatRupiah(shiftOrderTotal)}',
-                                                  ),
-                                                ),
-                                              );
-                                            },
+                                                );
+                                              },
+                                            ),
                                           ),
                                   ),
                                   Expanded(
@@ -1427,40 +1444,44 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                             'No orders in this shift.',
                                                           ),
                                                         )
-                                                      : ListView.separated(
-                                                          itemCount:
-                                                              selectedShiftOrders
-                                                                  .length,
-                                                          separatorBuilder:
-                                                              (_, __) =>
-                                                                  const Divider(),
-                                                          itemBuilder: (_, index) {
-                                                            final order =
-                                                                selectedShiftOrders[index];
-                                                            final total =
-                                                                (order['total_price']
-                                                                    as num?) ??
-                                                                (order['total_amount']
-                                                                    as num?) ??
-                                                                0;
-                                                            return ListTile(
-                                                              onTap: () =>
-                                                                  _showShiftOrderDetailsModal(
-                                                                    order,
-                                                                  ),
-                                                              title: Text(
-                                                                'Order #${order['id']} • ${order['customer_name'] ?? 'Guest'}',
-                                                              ),
-                                                              subtitle: Text(
-                                                                '${(order['status'] ?? '-').toString().toUpperCase()} • ${_onlineTimeLabel(order['created_at'])}',
-                                                              ),
-                                                              trailing: Text(
-                                                                _formatRupiah(
-                                                                  total,
+                                                      : RefreshIndicator(
+                                                          onRefresh:
+                                                              refreshDialogData,
+                                                          child: ListView.separated(
+                                                            itemCount:
+                                                                selectedShiftOrders
+                                                                    .length,
+                                                            separatorBuilder:
+                                                                (_, __) =>
+                                                                    const Divider(),
+                                                            itemBuilder: (_, index) {
+                                                              final order =
+                                                                  selectedShiftOrders[index];
+                                                              final total =
+                                                                  (order['total_price']
+                                                                      as num?) ??
+                                                                  (order['total_amount']
+                                                                      as num?) ??
+                                                                  0;
+                                                              return ListTile(
+                                                                onTap: () =>
+                                                                    _showShiftOrderDetailsModal(
+                                                                      order,
+                                                                    ),
+                                                                title: Text(
+                                                                  'Order #${order['id']} • ${order['customer_name'] ?? 'Guest'}',
                                                                 ),
-                                                              ),
-                                                            );
-                                                          },
+                                                                subtitle: Text(
+                                                                  '${(order['status'] ?? '-').toString().toUpperCase()} • ${_onlineTimeLabel(order['created_at'])}',
+                                                                ),
+                                                                trailing: Text(
+                                                                  _formatRupiah(
+                                                                    total,
+                                                                  ),
+                                                                ),
+                                                              );
+                                                            },
+                                                          ),
                                                         ),
                                                 ),
                                               ],

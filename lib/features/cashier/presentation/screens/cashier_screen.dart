@@ -130,7 +130,8 @@ class ProductListScreen extends StatefulWidget {
 final ValueNotifier<List<Product>> _filteredProductsNotifier =
     ValueNotifier<List<Product>>(const <Product>[]);
 
-class _ProductListScreenState extends State<ProductListScreen> {
+class _ProductListScreenState extends State<ProductListScreen>
+    with WidgetsBindingObserver {
   late Future<List<Product>> _future;
 
   final ValueNotifier<String?> _selectedCategoryNotifier =
@@ -214,6 +215,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _future = _loadProducts();
     LocalOrderStoreRepository.instance.init();
     OrderSyncService.instance.start();
@@ -229,6 +231,13 @@ class _ProductListScreenState extends State<ProductListScreen> {
     });
     unawaited(_initializeStoreSettingsHeartbeat());
     _startOnlineOrderBadgeListener();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    unawaited(OrderSyncService.instance.forceReconcile());
+    unawaited(_refreshAppData(silent: true));
   }
 
   @override
@@ -342,6 +351,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _cashierHeartbeatTimer?.cancel();
     _cartProviderSubscription?.removeListener(_handleConnectionStateChange);
     _onlineOrderBadgeSubscription?.cancel();

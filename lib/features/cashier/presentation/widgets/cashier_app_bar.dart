@@ -1043,53 +1043,64 @@ extension CashierAppBarMethods on _ProductListScreenState {
                                   );
                                 }
 
-                                return ListView.separated(
-                                  itemCount: rows.length,
-                                  separatorBuilder: (_, __) =>
-                                      const Divider(height: 1),
-                                  itemBuilder: (_, index) {
-                                    final row = rows[index];
-                                    final shiftId = _asInt(row['id']);
-                                    final status = (row['status'] ?? '-')
-                                        .toString();
-                                    final startedAt = _formatShiftDateTime(
-                                      row['started_at'],
-                                    );
-                                    final endedAt = _formatShiftDateTime(
-                                      row['ended_at'],
-                                    );
-                                    final isOpen =
-                                        status.toLowerCase() == 'open';
-                                    return ListTile(
-                                      onTap: shiftId == null
-                                          ? null
-                                          : () async {
-                                              Navigator.of(dialogContext).pop();
-                                              await _showAllOrdersDialog(
-                                                initialTab: 'shift_report',
-                                                initialShiftId: shiftId,
-                                              );
-                                            },
-                                      title: Text(
-                                        'Shift #${row['id']} • ${status.toUpperCase()}',
-                                      ),
-                                      subtitle: Text(
-                                        'Branch: ${row['branch_id'] ?? '-'}\nStart: $startedAt\nEnd: $endedAt',
-                                      ),
-                                      isThreeLine: true,
-                                      trailing: shiftId == null || isOpen
-                                          ? null
-                                          : IconButton(
-                                              tooltip: 'Delete shift',
-                                              icon: const Icon(
-                                                Icons.delete_outline,
-                                                color: Colors.red,
-                                              ),
-                                              onPressed: () =>
-                                                  handleDeleteShift(shiftId),
-                                            ),
-                                    );
+                                return RefreshIndicator(
+                                  onRefresh: () async {
+                                    await OrderSyncService.instance
+                                        .forceReconcile();
+                                    setDialogState(() {
+                                      shiftReportRefreshKey++;
+                                    });
                                   },
+                                  child: ListView.separated(
+                                    itemCount: rows.length,
+                                    separatorBuilder: (_, __) =>
+                                        const Divider(height: 1),
+                                    itemBuilder: (_, index) {
+                                      final row = rows[index];
+                                      final shiftId = _asInt(row['id']);
+                                      final status = (row['status'] ?? '-')
+                                          .toString();
+                                      final startedAt = _formatShiftDateTime(
+                                        row['started_at'],
+                                      );
+                                      final endedAt = _formatShiftDateTime(
+                                        row['ended_at'],
+                                      );
+                                      final isOpen =
+                                          status.toLowerCase() == 'open';
+                                      return ListTile(
+                                        onTap: shiftId == null
+                                            ? null
+                                            : () async {
+                                                Navigator.of(
+                                                  dialogContext,
+                                                ).pop();
+                                                await _showAllOrdersDialog(
+                                                  initialTab: 'shift_report',
+                                                  initialShiftId: shiftId,
+                                                );
+                                              },
+                                        title: Text(
+                                          'Shift #${row['id']} • ${status.toUpperCase()}',
+                                        ),
+                                        subtitle: Text(
+                                          'Branch: ${row['branch_id'] ?? '-'}\nStart: $startedAt\nEnd: $endedAt',
+                                        ),
+                                        isThreeLine: true,
+                                        trailing: shiftId == null || isOpen
+                                            ? null
+                                            : IconButton(
+                                                tooltip: 'Delete shift',
+                                                icon: const Icon(
+                                                  Icons.delete_outline,
+                                                  color: Colors.red,
+                                                ),
+                                                onPressed: () =>
+                                                    handleDeleteShift(shiftId),
+                                              ),
+                                      );
+                                    },
+                                  ),
                                 );
                               },
                             ),
@@ -1732,6 +1743,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
   }
 
   Future<void> _closeShift(int shiftId) async {
+    await OrderSyncService.instance.forceReconcile();
     final cart = context.read<CartProvider>();
     if (cart.pendingOfflineOrderCount > 0) {
       final shouldContinue = await _showUnsyncedWarningDialog(
@@ -2351,4 +2363,3 @@ class _SyncStatusScreenState extends State<_SyncStatusScreen> {
     );
   }
 }
-      
