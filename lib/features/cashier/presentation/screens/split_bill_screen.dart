@@ -11,7 +11,15 @@ class SplitBillScreen extends StatefulWidget {
 }
 
 class _SplitBillScreenState extends State<SplitBillScreen> {
-  String? _selectedGroupId;
+  int? _selectedItemId;
+  int _qtyToAssign = 1;
+
+  int _getUnassignedQty(CartItem item, List<GroupItem> allGroupItems) {
+    final assigned = allGroupItems
+        .where((g) => g.orderItemId == item.id)
+        .fold(0, (sum, g) => sum + g.assignedQty);
+    return item.quantity - assigned;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -27,7 +35,6 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
         automaticallyImplyLeading: false,
         shape: Border(bottom: BorderSide(color: Colors.grey.shade300)),
       ),
-
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Row(
@@ -43,25 +50,85 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                         'Unassigned Items',
                         style: TextStyle(fontWeight: FontWeight.w700),
                       ),
+                      const Text(
+                        'Select an item, adjust quantity, then tap a group to assign.',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
                       const SizedBox(height: 8),
                       Expanded(
                         child: ListView.builder(
                           itemCount: items.length,
                           itemBuilder: (_, index) {
                             final item = items[index];
+                            final unassignedQty = _getUnassignedQty(
+                              item,
+                              cart.groupItems,
+                            );
+                            final isSelected = _selectedItemId == item.id;
+
+                            // Hide item if all quantities have been assigned to groups
+                            if (unassignedQty <= 0 && !isSelected) {
+                              return const SizedBox.shrink();
+                            }
+
                             return ListTile(
                               title: Text(item.name),
-                              subtitle: Text('Qty ${item.quantity}'),
-                              trailing: FilledButton.tonal(
-                                onPressed: _selectedGroupId == null
-                                    ? null
-                                    : () => cart.assignItemToGroup(
-                                        item,
-                                        _selectedGroupId!,
-                                        item.quantity,
-                                      ),
-                                child: const Text('Assign'),
+                              subtitle: Text(
+                                'Unassigned: $unassignedQty / ${item.quantity}',
                               ),
+                              selected: isSelected,
+                              selectedTileColor: Colors.blue.shade50,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              onTap: () {
+                                setState(() {
+                                  if (isSelected) {
+                                    _selectedItemId = null; // Unselect
+                                  } else {
+                                    if (unassignedQty > 0) {
+                                      _selectedItemId = item.id;
+                                      _qtyToAssign =
+                                          1; // Default to assigning 1
+                                    }
+                                  }
+                                });
+                              },
+                              trailing: isSelected
+                                  ? Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.remove_circle_outline,
+                                          ),
+                                          onPressed: _qtyToAssign > 1
+                                              ? () => setState(
+                                                  () => _qtyToAssign--,
+                                                )
+                                              : null,
+                                        ),
+                                        Text(
+                                          '$_qtyToAssign',
+                                          style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.add_circle_outline,
+                                          ),
+                                          onPressed:
+                                              _qtyToAssign < unassignedQty
+                                              ? () => setState(
+                                                  () => _qtyToAssign++,
+                                                )
+                                              : null,
+                                        ),
+                                      ],
+                                    )
+                                  : null,
                             );
                           },
                         ),
@@ -91,9 +158,6 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                               cart.createGroup(
                                 'Group ${cart.cartGroups.length + 1}',
                               );
-                              setState(() {
-                                _selectedGroupId = cart.cartGroups.last.id;
-                              });
                             },
                             icon: const Icon(Icons.add),
                             label: const Text('Add Group'),
@@ -106,7 +170,6 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                           itemCount: cart.cartGroups.length,
                           itemBuilder: (_, index) {
                             final group = cart.cartGroups[index];
-                            final selected = _selectedGroupId == group.id;
                             final groupLines = cart.groupItems
                                 .where((item) => item.groupId == group.id)
                                 .toList(growable: false);
@@ -114,31 +177,103 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                               groupLines,
                               items,
                             );
+
+                            // Visual feedback that a group can receive the currently selected item
+                            final isItemPending = _selectedItemId != null;
+
                             return Card(
-                              color: selected ? Colors.blue.shade50 : null,
-                              child: ListTile(
-                                onTap: () =>
-                                    setState(() => _selectedGroupId = group.id),
-                                title: Text(group.groupName),
-                                subtitle: Text(
-                                  '${group.paymentStatus.toUpperCase()} • ${groupLines.length} item(s)',
+                              color: isItemPending
+                                  ? Colors.green.shade50
+                                  : null,
+                              elevation: isItemPending ? 2 : 0,
+                              shape: RoundedRectangleBorder(
+                                side: BorderSide(
+                                  color: isItemPending
+                                      ? Colors.green
+                                      : Colors.grey.shade300,
                                 ),
-                                trailing: Wrap(
-                                  spacing: 8,
-                                  crossAxisAlignment: WrapCrossAlignment.center,
-                                  children: [
-                                    Text('Rp ${subtotal.toStringAsFixed(0)}'),
-                                    if (group.paymentStatus != 'paid')
-                                      FilledButton(
-                                        onPressed: () =>
-                                            cart.processGroupPayment(
-                                              group.id,
-                                              subtotal,
-                                            ),
-                                        child: const Text('Pay'),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Column(
+                                children: [
+                                  ListTile(
+                                    onTap: () {
+                                      // Assign the selected item to this group on tap
+                                      if (_selectedItemId != null) {
+                                        final item = items.firstWhere(
+                                          (i) => i.id == _selectedItemId,
+                                        );
+                                        cart.assignItemToGroup(
+                                          item,
+                                          group.id,
+                                          _qtyToAssign,
+                                        );
+                                        setState(() {
+                                          _selectedItemId = null;
+                                          _qtyToAssign = 1;
+                                        });
+                                      }
+                                    },
+                                    title: Text(group.groupName),
+                                    subtitle: Text(
+                                      '${group.paymentStatus.toUpperCase()} • ${groupLines.length} item(s)',
+                                    ),
+                                    trailing: Wrap(
+                                      spacing: 8,
+                                      crossAxisAlignment:
+                                          WrapCrossAlignment.center,
+                                      children: [
+                                        Text(
+                                          'Rp ${subtotal.toStringAsFixed(0)}',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        if (group.paymentStatus != 'paid')
+                                          FilledButton(
+                                            onPressed: () =>
+                                                cart.processGroupPayment(
+                                                  group.id,
+                                                  subtotal,
+                                                ),
+                                            child: const Text('Pay'),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  // Expand the contents of the group below the header
+                                  if (groupLines.isNotEmpty)
+                                    const Divider(height: 1),
+                                  ...groupLines.map((line) {
+                                    CartItem? assignedItem;
+                                    try {
+                                      assignedItem = items.firstWhere(
+                                        (i) => i.id == line.orderItemId,
+                                      );
+                                    } catch (_) {}
+
+                                    if (assignedItem == null)
+                                      return const SizedBox.shrink();
+
+                                    return ListTile(
+                                      dense: true,
+                                      title: Text(
+                                        '${assignedItem.name} (Qty: ${line.assignedQty})',
                                       ),
-                                  ],
-                                ),
+                                      trailing: group.paymentStatus == 'paid'
+                                          ? null // Hide remove button if group is already paid
+                                          : IconButton(
+                                              icon: const Icon(
+                                                Icons.remove_circle,
+                                                color: Colors.red,
+                                              ),
+                                              tooltip: 'Remove from group',
+                                              onPressed: () =>
+                                                  cart.removeGroupItem(line.id),
+                                            ),
+                                    );
+                                  }),
+                                ],
                               ),
                             );
                           },

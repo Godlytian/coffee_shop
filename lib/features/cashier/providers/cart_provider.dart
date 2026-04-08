@@ -731,6 +731,12 @@ class CartProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void removeGroupItem(String groupItemId) {
+    _groupItems.removeWhere((item) => item.id == groupItemId);
+    _persistCartSnapshot();
+    notifyListeners();
+  }
+
   void processGroupPayment(String groupId, double amount, {int? cashierId}) {
     final index = _cartGroups.indexWhere((group) => group.id == groupId);
     if (index < 0) return;
