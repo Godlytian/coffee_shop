@@ -685,61 +685,67 @@ extension CashierAppBarMethods on _ProductListScreenState {
 
   Future<void> _syncShiftContext() async {
     await _offlineShiftRepository.init();
+
     try {
       final openShift = await _fetchOpenShiftWithRetry();
-
-      if (!mounted) return;
-
-      final shiftId = (openShift?['id'] as num?)?.toInt();
-      final cashierId =
-          (openShift?['current_cashier_id'] as num?)?.toInt() ??
-          (openShift?['opened_by'] as num?)?.toInt();
+      final fetchedShiftId = _asInt(openShift?['id']);
+      final fetchedCashierId =
+          _asInt(openShift?['current_cashier_id']) ??
+          _asInt(openShift?['opened_by']);
+      final shiftId = fetchedShiftId ?? _activeShiftId;
+      final cashierId = fetchedCashierId ?? _activeCashierId;
 
       if (openShift != null) {
         await _offlineShiftRepository.upsertCachedShift(openShift);
       }
 
-      setState(() {
+      if (mounted) {
+        setState(() {
+          _activeShiftId = shiftId;
+          _activeCashierId = cashierId;
+        });
+      } else {
         _activeShiftId = shiftId;
         _activeCashierId = cashierId;
-      });
+      }
 
       await _cacheActiveShiftLocally(shiftId: shiftId, cashierId: cashierId);
 
-      if (_activeShiftId == null) {
-        final cachedShifts = await _offlineShiftRepository.getCachedShifts();
-        Map<String, dynamic>? cachedOpenShift;
-        for (final row in cachedShifts) {
-          if ((row['status']?.toString().toLowerCase() == 'open') &&
-              row['id'] != null) {
-            cachedOpenShift = row;
-            break;
-          }
-        }
-        if (cachedOpenShift != null) {
-          final cachedShiftId = (cachedOpenShift['id'] as num?)?.toInt();
-          final cachedCashierId =
-              (cachedOpenShift['current_cashier_id'] as num?)?.toInt() ??
-              (cachedOpenShift['opened_by'] as num?)?.toInt();
-          if (cachedShiftId != null && mounted) {
-            setState(() {
-              _activeShiftId = cachedShiftId;
-              _activeCashierId = cachedCashierId;
-            });
-            await _cacheActiveShiftLocally(
-              shiftId: cachedShiftId,
-              cashierId: cachedCashierId,
-            );
-          }
-        }
+      if (_activeShiftId != null) {
+        return;
       }
 
-      if (_activeShiftId == null) {
+      final cachedShifts = await _offlineShiftRepository.getCachedShifts();
+      for (final row in cachedShifts) {
+        final status = row['status']?.toString().toLowerCase();
+        final cachedShiftId = (row['id'] as num?)?.toInt();
+        if (status != 'open' || cachedShiftId == null) continue;
+
+        final cachedCashierId =
+            (row['current_cashier_id'] as num?)?.toInt() ??
+            (row['opened_by'] as num?)?.toInt();
+        if (mounted) {
+          setState(() {
+            _activeShiftId = cachedShiftId;
+            _activeCashierId = cachedCashierId;
+          });
+        } else {
+          _activeShiftId = cachedShiftId;
+          _activeCashierId = cachedCashierId;
+        }
+        await _cacheActiveShiftLocally(
+          shiftId: cachedShiftId,
+          cashierId: cachedCashierId,
+        );
+        return;
+      }
+
+      await _restoreCachedShiftLocally();
+      if (_activeShiftId == null && mounted) {
         await _showOpenShiftDialog();
       }
     } catch (_) {
       await _restoreCachedShiftLocally();
-
       if (_activeShiftId == null && mounted) {
         await _showOpenShiftDialog();
       }
@@ -856,6 +862,25 @@ extension CashierAppBarMethods on _ProductListScreenState {
     }
 
     if (!mounted) return;
+
+    if (openShift != null) {
+      final fetchedShiftId = _asInt(openShift['id']);
+      final fetchedCashierId = _asInt(openShift['current_cashier_id']);
+
+      if (fetchedShiftId != null && _activeShiftId != fetchedShiftId) {
+        setState(() {
+          _activeShiftId = fetchedShiftId;
+          if (fetchedCashierId != null) {
+            _activeCashierId = fetchedCashierId;
+          }
+        });
+
+        await _cacheActiveShiftLocally(
+          shiftId: _activeShiftId,
+          cashierId: _activeCashierId,
+        );
+      }
+    }
 
     final openShiftId = _asInt(openShift?['id']) ?? _activeShiftId;
     final branchId = (openShift?['branch_id'] ?? '-').toString();

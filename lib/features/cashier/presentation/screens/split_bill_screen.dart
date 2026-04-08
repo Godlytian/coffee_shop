@@ -3,8 +3,24 @@ import 'package:coffee_shop/features/cashier/providers/cart_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+class SplitGroupPaymentResult {
+  final String method;
+  final num totalPaymentReceived;
+  final num changeAmount;
+
+  const SplitGroupPaymentResult({
+    required this.method,
+    required this.totalPaymentReceived,
+    required this.changeAmount,
+  });
+}
+
 class SplitBillScreen extends StatefulWidget {
-  const SplitBillScreen({super.key});
+  const SplitBillScreen({super.key, this.onRequestPayment, this.onGroupPaid});
+
+  final Future<SplitGroupPaymentResult?> Function(double total)?
+  onRequestPayment;
+  final Future<void> Function()? onGroupPaid;
 
   @override
   State<SplitBillScreen> createState() => _SplitBillScreenState();
@@ -231,11 +247,30 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                                         ),
                                         if (group.paymentStatus != 'paid')
                                           FilledButton(
-                                            onPressed: () =>
-                                                cart.processGroupPayment(
-                                                  group.id,
-                                                  subtotal,
-                                                ),
+                                            onPressed: () async {
+                                              final requestPayment =
+                                                  widget.onRequestPayment;
+                                              if (requestPayment != null) {
+                                                final payment =
+                                                    await requestPayment(
+                                                      subtotal,
+                                                    );
+                                                if (!mounted ||
+                                                    payment == null) {
+                                                  return;
+                                                }
+                                              }
+
+                                              cart.processGroupPayment(
+                                                group.id,
+                                                subtotal,
+                                              );
+                                              final onGroupPaid =
+                                                  widget.onGroupPaid;
+                                              if (onGroupPaid != null) {
+                                                await onGroupPaid();
+                                              }
+                                            },
                                             child: const Text('Pay'),
                                           ),
                                       ],

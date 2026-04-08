@@ -63,7 +63,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
               _card(
                 'Top Selling Items',
                 (data['top_items'] as List)
-                    .map((row) => 'Product ${row['product_id']}: ${row['qty']}')
+                    .map(
+                      (row) =>
+                          '${row['product_name'] ?? 'Product ${row['product_id']}'}: ${row['qty']}',
+                    )
                     .join('\n'),
               ),
               _card(
@@ -98,11 +101,34 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 
   Future<Map<String, dynamic>> _loadData() async {
-    final daily = await _repo.fetchDailySalesSummary(_selectedDate);
-    final methods = await _repo.fetchPaymentMethodBreakdown(_selectedDate);
-    final topItems = await _repo.fetchTopSellingItems(limit: 5);
-    final shiftSummary = await _repo.fetchShiftSummary();
-    final syncCounts = await _repo.fetchSyncStatusCounts();
+    double daily = 0;
+    Map<String, double> methods = {'cash': 0, 'qris': 0};
+    List<Map<String, dynamic>> topItems = <Map<String, dynamic>>[];
+    Map<String, double> shiftSummary = {
+      'expected_cash_drawer': 0,
+      'actual_cash_drawer': 0,
+      'total': 0,
+    };
+    Map<String, int> syncCounts = {'synced': 0, 'offline': 0};
+
+    try {
+      daily = await _repo.fetchDailySalesSummary(_selectedDate);
+    } catch (_) {}
+    try {
+      methods = await _repo.fetchPaymentMethodBreakdown(_selectedDate);
+    } catch (_) {}
+    try {
+      topItems = await _repo.fetchTopSellingItems(
+        date: _selectedDate,
+        limit: 5,
+      );
+    } catch (_) {}
+    try {
+      shiftSummary = await _repo.fetchShiftSummary();
+    } catch (_) {}
+    try {
+      syncCounts = await _repo.fetchSyncStatusCounts();
+    } catch (_) {}
 
     return {
       'daily_sales': daily,

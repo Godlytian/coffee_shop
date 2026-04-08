@@ -546,7 +546,6 @@ class _ProductListScreenState extends State<ProductListScreen>
     try {
       await _loadProducts();
       await _primeOfflineCachesOnFirstOpen();
-      await _syncShiftContext();
       if (!mounted) return;
       setState(() {
         _future = _loadProducts();
@@ -854,7 +853,12 @@ class _ProductListScreenState extends State<ProductListScreen>
                     opacity: isCartExpanded ? 1 : 0.96,
                     // 3. Inject your new widget here!
                     child: isCartExpanded
-                        ? const SplitBillScreen()
+                        ? SplitBillScreen(
+                            onRequestPayment: _showSplitGroupPaymentModal,
+                            onGroupPaid: () => _handleSplitGroupPaid(
+                              context.read<CartProvider>(),
+                            ),
+                          )
                         : _buildRegularCartBody(),
                   ),
                 ),
@@ -1294,6 +1298,109 @@ class _ProductListScreenState extends State<ProductListScreen>
     _showDropdownSnackbar(
       '${group.groupName} paid via ${payment.method.toUpperCase()} • ${_formatRupiah(total)}',
     );
+  }
+
+  Future<SplitGroupPaymentResult?> _showSplitGroupPaymentModal(
+    double totalAmount,
+  ) async {
+    final payment = await _showPaymentMethodModal(totalAmount);
+    if (payment == null) {
+      return null;
+    }
+    return SplitGroupPaymentResult(
+      method: payment.method,
+      totalPaymentReceived: payment.totalPaymentReceived,
+      changeAmount: payment.changeAmount,
+    );
+  }
+
+  Future<void> _handleSplitGroupPaid(CartProvider cart) async {
+    final customer = (_customerName ?? '').trim();
+    if (customer.isEmpty) {
+      setState(() {
+        _customerName = 'Split Bill';
+      });
+    }
+    await _handleSaveCartOrder(cart);
+    if (!mounted) return;
+
+    final groups = cart.cartGroups;
+    final allPaid =
+        groups.isNotEmpty &&
+        groups.every((group) => group.paymentStatus == 'paid');
+    if (!allPaid) {
+      return;
+    }
+
+    final shouldComplete =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('All groups paid'),
+            content: const Text(
+              'All split groups are paid. Do you want to complete this order now?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Not yet'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Complete order'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!shouldComplete) {
+      return;
+    }
+
+    await _completeSplitBillOrder(cart);
+  }
+
+  Future<void> _completeSplitBillOrder(CartProvider cart) async {
+    if (_activeShiftId == null) {
+      _showDropdownSnackbar(
+        'No open shift. Please open a shift first.',
+        isError: true,
+      );
+      return;
+    }
+
+    try {
+      if (_currentActiveOrderId != null) {
+        await cart.updateExistingOrder(
+          orderId: _currentActiveOrderId!,
+          customerName: _customerName,
+          tableName: _tableName,
+          orderType: _orderType,
+          status: 'completed',
+        );
+      } else {
+        await cart.submitOrder(
+          customerName: _customerName,
+          tableName: _tableName,
+          orderType: _orderType,
+          status: 'completed',
+          parentOrderId: _pendingParentOrderIdForNextSubmit,
+          cashierId: _activeCashierId,
+          shiftId: _activeShiftId,
+          shouldClearCart: false,
+        );
+      }
+      if (!mounted) return;
+      _resetCurrentOrderDraft(showMessage: false);
+      _showDropdownSnackbar('Split bill order completed.');
+    } catch (error) {
+      if (!mounted) return;
+      _showDropdownSnackbar(
+        'Failed to complete split bill order: $error',
+        isError: true,
+      );
+    }
   }
 
   Widget _buildSplitBoardBody() {

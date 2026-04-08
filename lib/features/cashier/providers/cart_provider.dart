@@ -1014,6 +1014,64 @@ class CartProvider extends ChangeNotifier {
     );
   }
 
+  Future<void> _syncCartGroupsToSupabase({
+    required SupabaseClient supabase,
+    required int orderId,
+  }) async {
+    final existingGroups = await supabase
+        .from('cart_groups')
+        .select('id')
+        .eq('order_id', orderId);
+    final existingGroupIds = (existingGroups as List)
+        .whereType<Map<String, dynamic>>()
+        .map((row) => row['id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+    if (existingGroupIds.isNotEmpty) {
+      await supabase
+          .from('group_items')
+          .delete()
+          .inFilter('group_id', existingGroupIds);
+    }
+    await supabase.from('cart_groups').delete().eq('order_id', orderId);
+
+    final groupsPayload = _cartGroups
+        .map((group) => group.toJson()..['order_id'] = orderId)
+        .toList(growable: false);
+    if (groupsPayload.isEmpty) {
+      return;
+    }
+    await supabase.from('cart_groups').insert(groupsPayload);
+
+    final orderItemRows = await supabase
+        .from('order_items')
+        .select('id, product_id')
+        .eq('order_id', orderId);
+    final orderItemIdByProductId = <int, int>{};
+    for (final row
+        in (orderItemRows as List).whereType<Map<String, dynamic>>()) {
+      final productId = (row['product_id'] as num?)?.toInt();
+      final orderItemId = (row['id'] as num?)?.toInt();
+      if (productId == null || orderItemId == null) continue;
+      orderItemIdByProductId[productId] = orderItemId;
+    }
+
+    final groupItemsPayload = _groupItems
+        .map((item) {
+          final mappedOrderItemId = orderItemIdByProductId[item.orderItemId];
+          if (mappedOrderItemId == null) {
+            return null;
+          }
+          return item.toJson()..['order_item_id'] = mappedOrderItemId;
+        })
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+
+    if (groupItemsPayload.isNotEmpty) {
+      await supabase.from('group_items').insert(groupItemsPayload);
+    }
+  }
+
   List<Map<String, dynamic>> _buildOfflineOrderItemCacheRows(int orderId) {
     return _items.values
         .map(
@@ -1124,6 +1182,7 @@ class CartProvider extends ChangeNotifier {
         await supabase.from('order_items').delete().eq('order_id', orderId);
         await supabase.from('order_items').insert(orderItemsPayload);
       }
+      await _syncCartGroupsToSupabase(supabase: supabase, orderId: orderId);
     } catch (_) {}
 
     await LocalOrderStoreRepository.instance.upsertOrder(
@@ -1134,15 +1193,14 @@ class CartProvider extends ChangeNotifier {
         orderId: orderId,
         rows: localOrderItems,
       );
-
-      await LocalCartGroupStoreRepository.instance.replaceForOrder(
-        orderId: orderId,
-        groups: _cartGroups
-            .map((group) => group.toJson()..['order_id'] = orderId)
-            .toList(),
-        groupItems: _groupItems.map((item) => item.toJson()).toList(),
-      );
     }
+    await LocalCartGroupStoreRepository.instance.replaceForOrder(
+      orderId: orderId,
+      groups: _cartGroups
+          .map((group) => group.toJson()..['order_id'] = orderId)
+          .toList(),
+      groupItems: _groupItems.map((item) => item.toJson()).toList(),
+    );
     if (hasCartItems) {
       await _updateQueuedOrderEventIfExists(
         orderId: orderId,
@@ -1262,11 +1320,19 @@ class CartProvider extends ChangeNotifier {
           .toList(growable: false);
 
       await supabase.from('order_items').insert(orderItems);
+      await _syncCartGroupsToSupabase(supabase: supabase, orderId: orderId);
       final localOrderPayload = Map<String, dynamic>.from(orderResponse);
       await LocalOrderStoreRepository.instance.upsertOrder(localOrderPayload);
       await LocalOrderItemStoreRepository.instance.replaceForOrder(
         orderId: orderId,
         rows: localOrderItems,
+      );
+      await LocalCartGroupStoreRepository.instance.replaceForOrder(
+        orderId: orderId,
+        groups: _cartGroups
+            .map((group) => group.toJson()..['order_id'] = orderId)
+            .toList(),
+        groupItems: _groupItems.map((item) => item.toJson()).toList(),
       );
 
       if (shouldClearCart) {
