@@ -31,6 +31,8 @@ class CartProvider extends ChangeNotifier {
   int _syncTotalItems = 0;
   int _syncProcessedItems = 0;
   double _totalAmount = 0.0;
+  Future<int>? _activeOrderSave;
+  bool _isUpdatingOrder = false;
 
   CartProvider() {
     _bootstrapOffline();
@@ -1107,109 +1109,124 @@ class CartProvider extends ChangeNotifier {
     num? changeAmount,
     String? status,
   }) async {
-    final supabase = Supabase.instance.client;
-    final normalizedTotal = totalAmount % 1 == 0
-        ? totalAmount.toInt()
-        : totalAmount;
+    if (_activeOrderSave != null) {
+      return _activeOrderSave!;
+    }
 
-    final existingOrders = await LocalOrderStoreRepository.instance
-        .fetchAllOrders();
-    final existingOrder = existingOrders.firstWhere(
-      (row) => ((row['id'] as num?)?.toInt() ?? -1) == orderId,
-      orElse: () => <String, dynamic>{},
-    );
-    final existingOrderSource = existingOrder['order_source']?.toString();
+    final saveFuture = (() async {
+      final supabase = Supabase.instance.client;
+      final normalizedTotal = totalAmount % 1 == 0
+          ? totalAmount.toInt()
+          : totalAmount;
 
-    final localOrderItems = _buildOfflineOrderItemCacheRows(orderId);
-    final hasCartItems = _items.isNotEmpty;
-    final orderItemsPayload = hasCartItems
-        ? _items.values
-              .map((item) {
-                return {
-                  'order_id': orderId,
-                  'product_id': item.id,
-                  'quantity': item.quantity,
-                  'price_at_time': _lineUnitPrice(item),
-                  'modifiers': _serializeItemModifiers(item),
-                };
-              })
-              .toList(growable: false)
-        : const <Map<String, dynamic>>[];
-    final localOrderPayload = {
-      'id': orderId,
-      'total_price': normalizedTotal,
-      'subtotal': normalizedTotal,
-      'discount_total': 0,
-      'points_earned': 0,
-      'points_used': 0,
-      'status': status ?? 'active',
-      'type': orderType,
-      'payment_method': paymentMethod,
-      'total_payment_received': totalPaymentReceived,
-      'change_amount': changeAmount,
-      'customer_name': customerName,
-      'notes': (tableName == null || tableName.isEmpty)
-          ? null
-          : 'Table: $tableName',
-      'order_source': existingOrderSource ?? 'cashier',
-      'created_at':
-          existingOrder['created_at']?.toString() ??
-          DateTime.now().toIso8601String(),
-    };
+      final existingOrders = await LocalOrderStoreRepository.instance
+          .fetchAllOrders();
+      final existingOrder = existingOrders.firstWhere(
+        (row) => ((row['id'] as num?)?.toInt() ?? -1) == orderId,
+        orElse: () => <String, dynamic>{},
+      );
+      final existingOrderSource = existingOrder['order_source']?.toString();
 
-    try {
-      await supabase
-          .from('orders')
-          .update({
-            'total_price': normalizedTotal,
-            'subtotal': normalizedTotal,
-            'discount_total': 0,
-            'points_earned': 0,
-            'points_used': 0,
-            'status': status ?? 'active',
-            'type': orderType,
-            'payment_method': paymentMethod,
-            'total_payment_received': totalPaymentReceived,
-            'change_amount': changeAmount,
-            'customer_name': customerName,
-            'notes': (tableName == null || tableName.isEmpty)
-                ? null
-                : 'Table: $tableName',
-          })
-          .eq('id', orderId);
+      final localOrderItems = _buildOfflineOrderItemCacheRows(orderId);
+      final hasCartItems = _items.isNotEmpty;
+      final orderItemsPayload = hasCartItems
+          ? _items.values
+                .map((item) {
+                  return {
+                    'order_id': orderId,
+                    'product_id': item.id,
+                    'quantity': item.quantity,
+                    'price_at_time': _lineUnitPrice(item),
+                    'modifiers': _serializeItemModifiers(item),
+                  };
+                })
+                .toList(growable: false)
+          : const <Map<String, dynamic>>[];
+      final localOrderPayload = {
+        'id': orderId,
+        'total_price': normalizedTotal,
+        'subtotal': normalizedTotal,
+        'discount_total': 0,
+        'points_earned': 0,
+        'points_used': 0,
+        'status': status ?? 'active',
+        'type': orderType,
+        'payment_method': paymentMethod,
+        'total_payment_received': totalPaymentReceived,
+        'change_amount': changeAmount,
+        'customer_name': customerName,
+        'notes': (tableName == null || tableName.isEmpty)
+            ? null
+            : 'Table: $tableName',
+        'order_source': existingOrderSource ?? 'cashier',
+        'created_at':
+            existingOrder['created_at']?.toString() ??
+            DateTime.now().toIso8601String(),
+      };
 
+      try {
+        await supabase
+            .from('orders')
+            .update({
+              'total_price': normalizedTotal,
+              'subtotal': normalizedTotal,
+              'discount_total': 0,
+              'points_earned': 0,
+              'points_used': 0,
+              'status': status ?? 'active',
+              'type': orderType,
+              'payment_method': paymentMethod,
+              'total_payment_received': totalPaymentReceived,
+              'change_amount': changeAmount,
+              'customer_name': customerName,
+              'notes': (tableName == null || tableName.isEmpty)
+                  ? null
+                  : 'Table: $tableName',
+            })
+            .eq('id', orderId);
+
+        if (hasCartItems) {
+          await supabase.from('order_items').delete().eq('order_id', orderId);
+          await supabase.from('order_items').insert(orderItemsPayload);
+        }
+        await _syncCartGroupsToSupabase(supabase: supabase, orderId: orderId);
+      } catch (_) {}
+
+      await LocalOrderStoreRepository.instance.upsertOrder(
+        Map<String, dynamic>.from(localOrderPayload),
+      );
       if (hasCartItems) {
-        await supabase.from('order_items').delete().eq('order_id', orderId);
-        await supabase.from('order_items').insert(orderItemsPayload);
+        await LocalOrderItemStoreRepository.instance.replaceForOrder(
+          orderId: orderId,
+          rows: localOrderItems,
+        );
       }
-      await _syncCartGroupsToSupabase(supabase: supabase, orderId: orderId);
-    } catch (_) {}
-
-    await LocalOrderStoreRepository.instance.upsertOrder(
-      Map<String, dynamic>.from(localOrderPayload),
-    );
-    if (hasCartItems) {
-      await LocalOrderItemStoreRepository.instance.replaceForOrder(
+      await LocalCartGroupStoreRepository.instance.replaceForOrder(
         orderId: orderId,
-        rows: localOrderItems,
+        groups: _cartGroups
+            .map((group) => group.toJson()..['order_id'] = orderId)
+            .toList(),
+        groupItems: _groupItems.map((item) => item.toJson()).toList(),
       );
-    }
-    await LocalCartGroupStoreRepository.instance.replaceForOrder(
-      orderId: orderId,
-      groups: _cartGroups
-          .map((group) => group.toJson()..['order_id'] = orderId)
-          .toList(),
-      groupItems: _groupItems.map((item) => item.toJson()).toList(),
-    );
-    if (hasCartItems) {
-      await _updateQueuedOrderEventIfExists(
-        orderId: orderId,
-        latestOrder: Map<String, dynamic>.from(localOrderPayload),
-        latestItems: _buildOrderItemPayloadRows(orderId),
-      );
-    }
+      if (hasCartItems) {
+        await _updateQueuedOrderEventIfExists(
+          orderId: orderId,
+          latestOrder: Map<String, dynamic>.from(localOrderPayload),
+          latestItems: _buildOrderItemPayloadRows(orderId),
+        );
+      }
 
-    return orderId;
+      return orderId;
+    })();
+
+    _activeOrderSave = saveFuture;
+    try {
+      return await saveFuture;
+    } finally {
+      if (identical(_activeOrderSave, saveFuture)) {
+        _activeOrderSave = null;
+      }
+    }
   }
 
   Future<int> submitOrder({
@@ -1225,157 +1242,97 @@ class CartProvider extends ChangeNotifier {
     int? shiftId,
     bool shouldClearCart = true,
   }) async {
-    final supabase = Supabase.instance.client;
-    final normalizedTotal = totalAmount % 1 == 0
-        ? totalAmount.toInt()
-        : totalAmount;
-    final localTxnId = _uuid.v4();
-
-    String composeNotes() {
-      final tableNote = (tableName == null || tableName.isEmpty)
-          ? ''
-          : 'Table: $tableName';
-      if (tableNote.isEmpty) {
-        return 'client_txn_id:$localTxnId';
-      }
-      return '$tableNote\nclient_txn_id:$localTxnId';
+    if (_activeOrderSave != null) {
+      return _activeOrderSave!;
     }
 
-    Map<String, dynamic>? orderPayload;
-    List<Map<String, dynamic>> orderItems = <Map<String, dynamic>>[];
+    final saveFuture = (() async {
+      final supabase = Supabase.instance.client;
+      final normalizedTotal = totalAmount % 1 == 0
+          ? totalAmount.toInt()
+          : totalAmount;
+      final localTxnId = _uuid.v4();
 
-    try {
-      Map<String, dynamic>? orderResponse;
-      for (var attempt = 0; attempt < 5; attempt++) {
-        final generatedOrderId = await _generateDailyUniqueOrderId(supabase);
-        final payload = {
-          'id': generatedOrderId,
-          'total_price': normalizedTotal,
-          'subtotal': normalizedTotal,
-          'discount_total': 0,
-          'points_earned': 0,
-          'points_used': 0,
-          'status': status,
-          'type': orderType,
-          'order_source': 'cashier',
-          'payment_method': paymentMethod,
-          'total_payment_received': totalPaymentReceived,
-          'change_amount': changeAmount,
-          'customer_name': customerName,
-          'parent_order_id': parentOrderId,
-          'cashier_id': cashierId,
-          'shift_id': shiftId,
-          'notes': composeNotes(),
-          'idempotency_key': localTxnId,
-        };
-        orderPayload = Map<String, dynamic>.from(payload);
+      String composeNotes() {
+        final tableNote = (tableName == null || tableName.isEmpty)
+            ? ''
+            : 'Table: $tableName';
+        if (tableNote.isEmpty) {
+          return 'client_txn_id:$localTxnId';
+        }
+        return '$tableNote\nclient_txn_id:$localTxnId';
+      }
 
-        try {
+      Map<String, dynamic>? orderPayload;
+      List<Map<String, dynamic>> orderItems = <Map<String, dynamic>>[];
+
+      try {
+        Map<String, dynamic>? orderResponse;
+        for (var attempt = 0; attempt < 5; attempt++) {
+          final generatedOrderId = await _generateDailyUniqueOrderId(supabase);
+          final payload = {
+            'id': generatedOrderId,
+            'total_price': normalizedTotal,
+            'subtotal': normalizedTotal,
+            'discount_total': 0,
+            'points_earned': 0,
+            'points_used': 0,
+            'status': status,
+            'type': orderType,
+            'order_source': 'cashier',
+            'payment_method': paymentMethod,
+            'total_payment_received': totalPaymentReceived,
+            'change_amount': changeAmount,
+            'customer_name': customerName,
+            'parent_order_id': parentOrderId,
+            'cashier_id': cashierId,
+            'shift_id': shiftId,
+            'notes': composeNotes(),
+            'idempotency_key': localTxnId,
+          };
+          orderPayload = Map<String, dynamic>.from(payload);
+
           try {
-            orderResponse = await supabase
-                .from('orders')
-                .insert(payload)
-                .select()
-                .single();
-          } on PostgrestException catch (error) {
-            if (error.message.toLowerCase().contains('idempotency_key')) {
-              payload.remove('idempotency_key');
+            try {
               orderResponse = await supabase
                   .from('orders')
                   .insert(payload)
                   .select()
                   .single();
-            } else {
+            } on PostgrestException catch (error) {
+              if (error.message.toLowerCase().contains('idempotency_key')) {
+                payload.remove('idempotency_key');
+                orderResponse = await supabase
+                    .from('orders')
+                    .insert(payload)
+                    .select()
+                    .single();
+              } else {
+                rethrow;
+              }
+            }
+            break;
+          } on PostgrestException catch (error) {
+            final isDuplicateId =
+                error.code == '23505' &&
+                error.message.toLowerCase().contains('id');
+            if (!isDuplicateId || attempt == 4) {
               rethrow;
             }
           }
-          break;
-        } on PostgrestException catch (error) {
-          final isDuplicateId =
-              error.code == '23505' &&
-              error.message.toLowerCase().contains('id');
-          if (!isDuplicateId || attempt == 4) {
-            rethrow;
-          }
         }
-      }
 
-      if (orderResponse == null) {
-        throw Exception('Failed to create order id after retries');
-      }
+        if (orderResponse == null) {
+          throw Exception('Failed to create order id after retries');
+        }
 
-      final orderId = (orderResponse['id'] as num).toInt();
-      final localOrderItems = _buildOfflineOrderItemCacheRows(orderId);
+        final orderId = (orderResponse['id'] as num).toInt();
+        final localOrderItems = _buildOfflineOrderItemCacheRows(orderId);
 
-      orderItems = _items.values
-          .map((item) {
-            return {
-              'order_id': orderId,
-              'product_id': item.id,
-              'quantity': item.quantity,
-              'price_at_time': _lineUnitPrice(item),
-              'modifiers': _serializeItemModifiers(item),
-            };
-          })
-          .toList(growable: false);
-
-      await supabase.from('order_items').insert(orderItems);
-      await _syncCartGroupsToSupabase(supabase: supabase, orderId: orderId);
-      final localOrderPayload = Map<String, dynamic>.from(orderResponse);
-      await LocalOrderStoreRepository.instance.upsertOrder(localOrderPayload);
-      await LocalOrderItemStoreRepository.instance.replaceForOrder(
-        orderId: orderId,
-        rows: localOrderItems,
-      );
-      await LocalCartGroupStoreRepository.instance.replaceForOrder(
-        orderId: orderId,
-        groups: _cartGroups
-            .map((group) => group.toJson()..['order_id'] = orderId)
-            .toList(),
-        groupItems: _groupItems.map((item) => item.toJson()).toList(),
-      );
-
-      if (shouldClearCart) {
-        clearCart();
-      }
-      return orderId;
-    } catch (_) {
-      if (orderPayload == null) {
-        final localOrderId = DateTime.now().millisecondsSinceEpoch;
-        orderPayload = {
-          'id': localOrderId,
-          'total_price': normalizedTotal,
-          'subtotal': normalizedTotal,
-          'discount_total': 0,
-          'points_earned': 0,
-          'points_used': 0,
-          'status': status,
-          'type': orderType,
-          'order_source': 'cashier',
-          'payment_method': paymentMethod,
-          'total_payment_received': totalPaymentReceived,
-          'change_amount': changeAmount,
-          'customer_name': customerName,
-          'parent_order_id': parentOrderId,
-          'cashier_id': cashierId,
-          'shift_id': shiftId,
-          'notes': composeNotes(),
-          'idempotency_key': localTxnId,
-        };
-      }
-
-      final offlineOrderId = (orderPayload['id'] as num?)?.toInt();
-      if (offlineOrderId == null) {
-        throw Exception('Unable to resolve local order id while offline');
-      }
-
-      final localOrderItems = _buildOfflineOrderItemCacheRows(offlineOrderId);
-
-      if (orderItems.isEmpty) {
         orderItems = _items.values
             .map((item) {
               return {
-                'order_id': offlineOrderId,
+                'order_id': orderId,
                 'product_id': item.id,
                 'quantity': item.quantity,
                 'price_at_time': _lineUnitPrice(item),
@@ -1383,42 +1340,117 @@ class CartProvider extends ChangeNotifier {
               };
             })
             .toList(growable: false);
-      }
 
-      final queuePayload = {
-        'local_txn_id': localTxnId,
-        'queued_at': DateTime.now().toIso8601String(),
-        'order': orderPayload,
-        'items': orderItems,
-        'cart_groups': _cartGroups.map((group) => group.toJson()).toList(),
-        'group_items': _groupItems.map((item) => item.toJson()).toList(),
-      };
-      await _offlineRepo.enqueue(queuePayload);
-      await _offlineRepo.addLog(
-        level: 'info',
-        message: 'Queued order#${orderPayload['id']} for sync',
-        localTxnId: localTxnId,
-        payload: queuePayload,
-      );
+        await supabase.from('order_items').insert(orderItems);
+        await _syncCartGroupsToSupabase(supabase: supabase, orderId: orderId);
+        final localOrderPayload = Map<String, dynamic>.from(orderResponse);
+        await LocalOrderStoreRepository.instance.upsertOrder(localOrderPayload);
+        await LocalOrderItemStoreRepository.instance.replaceForOrder(
+          orderId: orderId,
+          rows: localOrderItems,
+        );
+        await LocalCartGroupStoreRepository.instance.replaceForOrder(
+          orderId: orderId,
+          groups: _cartGroups
+              .map((group) => group.toJson()..['order_id'] = orderId)
+              .toList(),
+          groupItems: _groupItems.map((item) => item.toJson()).toList(),
+        );
 
-      await LocalOrderStoreRepository.instance.upsertOrder(orderPayload);
-      await LocalOrderItemStoreRepository.instance.replaceForOrder(
-        orderId: offlineOrderId,
-        rows: localOrderItems,
-      );
-      await LocalCartGroupStoreRepository.instance.replaceForOrder(
-        orderId: offlineOrderId,
-        groups: _cartGroups
-            .map((group) => group.toJson()..['order_id'] = offlineOrderId)
-            .toList(),
-        groupItems: _groupItems.map((item) => item.toJson()).toList(),
-      );
-      await _refreshOfflineCounters();
-      notifyListeners();
-      if (shouldClearCart) {
-        clearCart();
+        if (shouldClearCart) {
+          clearCart();
+        }
+        return orderId;
+      } catch (_) {
+        if (orderPayload == null) {
+          final localOrderId = DateTime.now().millisecondsSinceEpoch;
+          orderPayload = {
+            'id': localOrderId,
+            'total_price': normalizedTotal,
+            'subtotal': normalizedTotal,
+            'discount_total': 0,
+            'points_earned': 0,
+            'points_used': 0,
+            'status': status,
+            'type': orderType,
+            'order_source': 'cashier',
+            'payment_method': paymentMethod,
+            'total_payment_received': totalPaymentReceived,
+            'change_amount': changeAmount,
+            'customer_name': customerName,
+            'parent_order_id': parentOrderId,
+            'cashier_id': cashierId,
+            'shift_id': shiftId,
+            'notes': composeNotes(),
+            'idempotency_key': localTxnId,
+          };
+        }
+
+        final offlineOrderId = (orderPayload['id'] as num?)?.toInt();
+        if (offlineOrderId == null) {
+          throw Exception('Unable to resolve local order id while offline');
+        }
+
+        final localOrderItems = _buildOfflineOrderItemCacheRows(offlineOrderId);
+
+        if (orderItems.isEmpty) {
+          orderItems = _items.values
+              .map((item) {
+                return {
+                  'order_id': offlineOrderId,
+                  'product_id': item.id,
+                  'quantity': item.quantity,
+                  'price_at_time': _lineUnitPrice(item),
+                  'modifiers': _serializeItemModifiers(item),
+                };
+              })
+              .toList(growable: false);
+        }
+
+        final queuePayload = {
+          'local_txn_id': localTxnId,
+          'queued_at': DateTime.now().toIso8601String(),
+          'order': orderPayload,
+          'items': orderItems,
+          'cart_groups': _cartGroups.map((group) => group.toJson()).toList(),
+          'group_items': _groupItems.map((item) => item.toJson()).toList(),
+        };
+        await _offlineRepo.enqueue(queuePayload);
+        await _offlineRepo.addLog(
+          level: 'info',
+          message: 'Queued order#${orderPayload['id']} for sync',
+          localTxnId: localTxnId,
+          payload: queuePayload,
+        );
+
+        await LocalOrderStoreRepository.instance.upsertOrder(orderPayload);
+        await LocalOrderItemStoreRepository.instance.replaceForOrder(
+          orderId: offlineOrderId,
+          rows: localOrderItems,
+        );
+        await LocalCartGroupStoreRepository.instance.replaceForOrder(
+          orderId: offlineOrderId,
+          groups: _cartGroups
+              .map((group) => group.toJson()..['order_id'] = offlineOrderId)
+              .toList(),
+          groupItems: _groupItems.map((item) => item.toJson()).toList(),
+        );
+        await _refreshOfflineCounters();
+        notifyListeners();
+        if (shouldClearCart) {
+          clearCart();
+        }
+        return -1;
       }
-      return -1;
+    })();
+
+    _activeOrderSave = saveFuture;
+    try {
+      return await saveFuture;
+    } finally {
+      if (identical(_activeOrderSave, saveFuture)) {
+        _activeOrderSave = null;
+      }
     }
   }
 

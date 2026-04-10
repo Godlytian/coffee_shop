@@ -910,6 +910,7 @@ extension CashierControllerMethods on _ProductListScreenState {
   Future<void> _showActiveCashierOrdersDialog() async {
     int? selectedOrderId;
     final ScrollController activeOrdersScrollController = ScrollController();
+    bool isSwitching = false;
 
     await showDialog<void>(
       context: context,
@@ -1188,27 +1189,53 @@ extension CashierControllerMethods on _ProductListScreenState {
                                               ),
                                               const SizedBox(width: 8),
                                               ElevatedButton(
-                                                onPressed: () async {
-                                                  final canContinue =
-                                                      await _handleDraftBeforeSwitch(
-                                                        dialogContext,
-                                                      );
-                                                  if (!canContinue ||
-                                                      !context.mounted) {
-                                                    return;
-                                                  }
+                                                onPressed: isSwitching
+                                                    ? null
+                                                    : () async {
+                                                        setDialogState(
+                                                          () => isSwitching =
+                                                              true,
+                                                        ); // Disable button
 
-                                                  await _switchToActiveOrder(
-                                                    selectedOrder,
-                                                  );
-                                                  if (!context.mounted) return;
-                                                  Navigator.of(
-                                                    dialogContext,
-                                                  ).pop();
-                                                },
-                                                child: const Text(
-                                                  'Switch to this order',
-                                                ),
+                                                        try {
+                                                          final canContinue =
+                                                              await _handleDraftBeforeSwitch(
+                                                                dialogContext,
+                                                              );
+                                                          if (!canContinue ||
+                                                              !context.mounted)
+                                                            return;
+
+                                                          await _switchToActiveOrder(
+                                                            selectedOrder,
+                                                          );
+                                                          if (!context.mounted)
+                                                            return;
+                                                          Navigator.of(
+                                                            dialogContext,
+                                                          ).pop();
+                                                        } finally {
+                                                          if (context.mounted) {
+                                                            setDialogState(
+                                                              () =>
+                                                                  isSwitching =
+                                                                      false,
+                                                            );
+                                                          }
+                                                        }
+                                                      },
+                                                child: isSwitching
+                                                    ? const SizedBox(
+                                                        width: 16,
+                                                        height: 16,
+                                                        child:
+                                                            CircularProgressIndicator(
+                                                              strokeWidth: 2,
+                                                            ),
+                                                      )
+                                                    : const Text(
+                                                        'Switch to this order',
+                                                      ),
                                               ),
                                             ],
                                           ),
