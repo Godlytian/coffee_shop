@@ -185,6 +185,7 @@ class _ProductListScreenState extends State<ProductListScreen>
   int _splitQuantityDraft = 1;
   int _splitGroupCounter = 0;
   int _splitItemCounter = 0;
+
   StreamSubscription<List<Map<String, dynamic>>>? _onlineOrderBadgeSubscription;
   final ValueNotifier<int> _onlinePaidOrdersCountNotifier = ValueNotifier<int>(
     0,
@@ -194,6 +195,8 @@ class _ProductListScreenState extends State<ProductListScreen>
   final Set<int> _newlyPaidOnlineOrderIds = <int>{};
   final Map<int, String> _onlineOrderItemPreviewCache = <int, String>{};
   final Set<int> _onlineOrderItemPreviewLoading = <int>{};
+  bool _requireShiftOpenForContinuedOrders = false;
+  int? _pendingShiftTransferFromId;
 
   Timer? _cashierHeartbeatTimer;
   Timer? _menuSearchDebounceTimer;
@@ -1775,6 +1778,7 @@ class _ProductListScreenState extends State<ProductListScreen>
           customerName: _customerName,
           tableName: _tableName,
           orderType: _orderType,
+          shiftId: _activeShiftId,
           paymentMethod: payment.method,
           totalPaymentReceived: payment.totalPaymentReceived,
           changeAmount: payment.changeAmount,

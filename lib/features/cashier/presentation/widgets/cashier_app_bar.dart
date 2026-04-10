@@ -1,5 +1,11 @@
 part of 'package:coffee_shop/features/cashier/presentation/screens/cashier_screen.dart';
 
+enum _CloseShiftActiveOrderAction {
+  completeInCurrentShift,
+  continueInNewShift,
+  cancel,
+}
+
 extension CashierAppBarMethods on _ProductListScreenState {
   static const String _supabaseUrl = 'https://iasodtouoikaeuxkuecy.supabase.co';
   static const String _supabaseAnonKey =
@@ -1413,6 +1419,8 @@ extension CashierAppBarMethods on _ProductListScreenState {
                     cashierId: existingCashierId,
                   );
                   if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+                  _requireShiftOpenForContinuedOrders = false;
+                  _pendingShiftTransferFromId = null;
                   _showDropdownSnackbar(
                     'Shift already open. Continuing existing shift.',
                   );
@@ -1452,6 +1460,14 @@ extension CashierAppBarMethods on _ProductListScreenState {
                   _activeShiftId = shiftId;
                   _activeCashierId = createdCashierId;
                 });
+                if (_pendingShiftTransferFromId != null && shiftId != null) {
+                  await _reassignContinuingOrdersToShift(
+                    fromShiftId: _pendingShiftTransferFromId!,
+                    toShiftId: shiftId,
+                  );
+                }
+                _requireShiftOpenForContinuedOrders = false;
+                _pendingShiftTransferFromId = null;
                 await _cacheActiveShiftLocally(
                   shiftId: shiftId,
                   cashierId: createdCashierId,
@@ -1489,6 +1505,8 @@ extension CashierAppBarMethods on _ProductListScreenState {
                     if (dialogContext.mounted) {
                       Navigator.of(dialogContext).pop();
                     }
+                    _requireShiftOpenForContinuedOrders = false;
+                    _pendingShiftTransferFromId = null;
                     _showDropdownSnackbar(
                       'Shift already open. Continuing existing shift.',
                     );
@@ -1507,6 +1525,15 @@ extension CashierAppBarMethods on _ProductListScreenState {
                   _activeShiftId = int.tryParse(localShiftId);
                   _activeCashierId = cashierId;
                 });
+                if (_pendingShiftTransferFromId != null &&
+                    _activeShiftId != null) {
+                  await _reassignContinuingOrdersToShift(
+                    fromShiftId: _pendingShiftTransferFromId!,
+                    toShiftId: _activeShiftId!,
+                  );
+                }
+                _requireShiftOpenForContinuedOrders = false;
+                _pendingShiftTransferFromId = null;
                 await _cacheActiveShiftLocally(
                   shiftId: _activeShiftId,
                   cashierId: _activeCashierId,
@@ -1551,6 +1578,22 @@ extension CashierAppBarMethods on _ProductListScreenState {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (_requireShiftOpenForContinuedOrders) ...[
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          border: Border.all(color: Colors.orange.shade200),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'Please open a new shift to continue unfinished orders from the previous shift.',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
                     DropdownButtonFormField<int>(
                       value: selectedCashierId,
                       isExpanded: true,
@@ -1815,12 +1858,20 @@ extension CashierAppBarMethods on _ProductListScreenState {
     }).length;
 
     if (remainingActiveOrders > 0) {
-      final shouldContinue = await _showActiveOrdersOnCloseShiftDialog(
+      final action = await _showActiveOrdersOnCloseShiftDialog(
         activeOrderCount: remainingActiveOrders,
       );
-      if (!shouldContinue) {
+      if (action == _CloseShiftActiveOrderAction.completeInCurrentShift ||
+          action == _CloseShiftActiveOrderAction.cancel) {
+        if (action == _CloseShiftActiveOrderAction.completeInCurrentShift) {
+          _showDropdownSnackbar(
+            'Please complete the active order(s) first, then close shift again.',
+          );
+        }
         return;
       }
+      _requireShiftOpenForContinuedOrders = true;
+      _pendingShiftTransferFromId = shiftId;
     }
 
     try {
@@ -1847,7 +1898,7 @@ extension CashierAppBarMethods on _ProductListScreenState {
       });
       await _cacheActiveShiftLocally(shiftId: null, cashierId: null);
       _showDropdownSnackbar('Shift closed.');
-      await _showOpenShiftDialog();
+      await _showOpenShiftDialog(force: _requireShiftOpenForContinuedOrders);
     } catch (e) {
       final endedAt = DateTime.now().toUtc().toIso8601String();
       await context.read<CartProvider>().enqueueOfflineShiftEvent(
@@ -1878,35 +1929,91 @@ extension CashierAppBarMethods on _ProductListScreenState {
         'Shift close queued for sync (offline mode).',
         isError: true,
       );
-      await _showOpenShiftDialog();
+      await _showOpenShiftDialog(force: _requireShiftOpenForContinuedOrders);
     }
   }
 
-  Future<bool> _showActiveOrdersOnCloseShiftDialog({
+  Future<_CloseShiftActiveOrderAction> _showActiveOrdersOnCloseShiftDialog({
     required int activeOrderCount,
   }) async {
-    final result = await showDialog<bool>(
+    final result = await showDialog<_CloseShiftActiveOrderAction>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('Active orders still running'),
           content: Text(
-            'There are $activeOrderCount active order(s) in this shift. You can continue these orders after opening a new shift. Close this shift now?',
+            'There are $activeOrderCount active order(s) in this shift. Complete them in this shift, or continue them in a new shift.',
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(_CloseShiftActiveOrderAction.cancel),
               child: const Text('Cancel'),
             ),
+            TextButton(
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(_CloseShiftActiveOrderAction.completeInCurrentShift),
+              child: const Text('Complete in This Shift'),
+            ),
             ElevatedButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(_CloseShiftActiveOrderAction.continueInNewShift),
               child: const Text('Continue & Open New Shift'),
             ),
           ],
         );
       },
     );
-    return result ?? false;
+    return result ?? _CloseShiftActiveOrderAction.cancel;
+  }
+
+  Future<void> _reassignContinuingOrdersToShift({
+    required int fromShiftId,
+    required int toShiftId,
+  }) async {
+    if (fromShiftId == toShiftId) return;
+    final continuingStatuses = <String>{
+      OrderStatus.pending,
+      OrderStatus.active,
+      OrderStatus.processing,
+      OrderStatus.assigned,
+      OrderStatus.paid,
+    };
+
+    final localOrders = await LocalOrderStoreRepository.instance
+        .fetchAllOrders();
+    final targetOrders = localOrders
+        .where((order) {
+          final status = (order['status'] ?? '').toString();
+          final shiftId = _asInt(order['shift_id']);
+          final isDeleted = order['deleted_at'] != null;
+          return !isDeleted &&
+              shiftId == fromShiftId &&
+              continuingStatuses.contains(status);
+        })
+        .toList(growable: false);
+
+    for (final order in targetOrders) {
+      final patched = Map<String, dynamic>.from(order)
+        ..['shift_id'] = toShiftId;
+      await LocalOrderStoreRepository.instance.upsertOrder(patched);
+    }
+
+    try {
+      final ids = targetOrders
+          .map((order) => (order['id'] as num?)?.toInt())
+          .whereType<int>()
+          .toList(growable: false);
+      if (ids.isNotEmpty) {
+        await supabase
+            .from('orders')
+            .update({'shift_id': toShiftId})
+            .inFilter('id', ids);
+      }
+    } catch (_) {}
   }
 
   Future<bool> _showUnsyncedWarningDialog({required int pendingCount}) async {

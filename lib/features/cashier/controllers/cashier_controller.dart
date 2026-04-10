@@ -1452,6 +1452,11 @@ extension CashierControllerMethods on _ProductListScreenState {
       return;
     }
 
+    if (_currentActiveOrderId != null && _currentActiveOrderId == orderId) {
+      _showDropdownSnackbar('Order #$orderId is already active in cart.');
+      return;
+    }
+
     final cart = context.read<CartProvider>();
     List<_OnlineOrderItem> items;
     try {

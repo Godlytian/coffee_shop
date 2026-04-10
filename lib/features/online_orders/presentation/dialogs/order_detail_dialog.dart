@@ -1,6 +1,29 @@
 part of '../../../cashier/presentation/screens/cashier_screen.dart';
 
 extension OrderDetailDialogMethods on _ProductListScreenState {
+  String _orderItemDedupSignature(Map<String, dynamic> row) {
+    final productId = (row['product_id'] as num?)?.toInt() ?? 0;
+    final notes = row['notes']?.toString() ?? '';
+    final modifiers = row['modifiers'];
+    return '$productId|$notes|${jsonEncode(_canonicalizeJsonValue(modifiers))}';
+  }
+
+  List<Map<String, dynamic>> _dedupeOrderItemRows(
+    List<Map<String, dynamic>> rows,
+  ) {
+    final dedupedBySignature = <String, Map<String, dynamic>>{};
+    for (final row in rows) {
+      final signature = _orderItemDedupSignature(row);
+      final incomingQty = (row['quantity'] as num?)?.toInt() ?? 0;
+      final existing = dedupedBySignature[signature];
+      final existingQty = (existing?['quantity'] as num?)?.toInt() ?? -1;
+      if (existing == null || incomingQty >= existingQty) {
+        dedupedBySignature[signature] = Map<String, dynamic>.from(row);
+      }
+    }
+    return dedupedBySignature.values.toList(growable: false);
+  }
+
   Future<void> _showOrderDetailModal(Map<String, dynamic> order) async {
     final orderId = order['id'];
     if (orderId == null) return;
@@ -166,10 +189,12 @@ extension OrderDetailDialogMethods on _ProductListScreenState {
           .from('order_items')
           .select('quantity, product_id, modifiers, notes, products(*)')
           .eq('order_id', orderId);
-      final cacheRows = (rows as List<dynamic>)
-          .whereType<Map>()
-          .map((row) => Map<String, dynamic>.from(row))
-          .toList(growable: false);
+      final cacheRows = _dedupeOrderItemRows(
+        (rows as List<dynamic>)
+            .whereType<Map>()
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList(growable: false),
+      );
       await LocalOrderItemStoreRepository.instance.replaceForOrder(
         orderId: orderId,
         rows: cacheRows,
@@ -191,9 +216,15 @@ extension OrderDetailDialogMethods on _ProductListScreenState {
       }
     }
 
+    final normalizedRows = _dedupeOrderItemRows(
+      (rows as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: false),
+    );
+
     final List<_OnlineOrderItem> items = [];
-    for (final row in rows as List<dynamic>) {
-      final data = row as Map<String, dynamic>;
+    for (final data in normalizedRows) {
       final quantity = (data['quantity'] as num?)?.toInt() ?? 1;
       final productData = data['products'] as Map<String, dynamic>?;
       final rawModifiers = data['modifiers'];

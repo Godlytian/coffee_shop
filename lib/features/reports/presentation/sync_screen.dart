@@ -165,7 +165,6 @@ class _SyncScreenState extends State<SyncScreen> {
                           Text('Pending orders: $pendingOrders'),
                           Text('Pending shift events: $pendingShiftEvents'),
                           Text(
-                            // Make sure CurrencyFormatters is imported or format it differently if not
                             'Pending sync value: ${CurrencyFormatters.formatRupiah(pendingValue)}',
                           ),
                           Text('Failed items: $failedTotal'),

@@ -1104,6 +1104,7 @@ class CartProvider extends ChangeNotifier {
     String? customerName,
     String? tableName,
     required String orderType,
+    int? shiftId,
     String? paymentMethod,
     num? totalPaymentReceived,
     num? changeAmount,
@@ -1152,6 +1153,7 @@ class CartProvider extends ChangeNotifier {
         'status': status ?? 'active',
         'type': orderType,
         'payment_method': paymentMethod,
+        'shift_id': shiftId ?? existingOrder['shift_id'],
         'total_payment_received': totalPaymentReceived,
         'change_amount': changeAmount,
         'customer_name': customerName,
@@ -1165,24 +1167,29 @@ class CartProvider extends ChangeNotifier {
       };
 
       try {
+        final orderUpdatePayload = <String, dynamic>{
+          'total_price': normalizedTotal,
+          'subtotal': normalizedTotal,
+          'discount_total': 0,
+          'points_earned': 0,
+          'points_used': 0,
+          'status': status ?? 'active',
+          'type': orderType,
+          'payment_method': paymentMethod,
+          'total_payment_received': totalPaymentReceived,
+          'change_amount': changeAmount,
+          'customer_name': customerName,
+          'notes': (tableName == null || tableName.isEmpty)
+              ? null
+              : 'Table: $tableName',
+        };
+        if (shiftId != null) {
+          orderUpdatePayload['shift_id'] = shiftId;
+        }
+
         await supabase
             .from('orders')
-            .update({
-              'total_price': normalizedTotal,
-              'subtotal': normalizedTotal,
-              'discount_total': 0,
-              'points_earned': 0,
-              'points_used': 0,
-              'status': status ?? 'active',
-              'type': orderType,
-              'payment_method': paymentMethod,
-              'total_payment_received': totalPaymentReceived,
-              'change_amount': changeAmount,
-              'customer_name': customerName,
-              'notes': (tableName == null || tableName.isEmpty)
-                  ? null
-                  : 'Table: $tableName',
-            })
+            .update(orderUpdatePayload)
             .eq('id', orderId);
 
         if (hasCartItems) {
