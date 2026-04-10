@@ -1417,6 +1417,10 @@ extension CashierControllerMethods on _ProductListScreenState {
     }
 
     final kitchenLines = cart.items.values
+        .where((item) {
+          final category = item.category.toLowerCase();
+          return category.contains('food') || category.contains('snack');
+        })
         .map(
           (item) => <String, dynamic>{
             'name': '[KITCHEN] ${item.name}',
@@ -1425,6 +1429,14 @@ extension CashierControllerMethods on _ProductListScreenState {
           },
         )
         .toList(growable: false);
+
+    if (kitchenLines.isEmpty) {
+      _showDropdownSnackbar(
+        'No food or snack items to print for kitchen.',
+        isError: true,
+      );
+      return;
+    }
 
     try {
       await ThermalPrinterService.instance.printPaymentReceipt(
