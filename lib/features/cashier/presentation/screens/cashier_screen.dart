@@ -199,6 +199,7 @@ class _ProductListScreenState extends State<ProductListScreen>
   Timer? _menuSearchDebounceTimer;
   bool _isOnlineOrdersEnabled = true;
   DateTime? _cashierLastSeenAt;
+  bool _isHandlingProductTap = false;
 
   Stream<List<Map<String, dynamic>>> get _onlinePendingOrdersStream =>
       _activeShiftId == null || !_isOnlineOrdersEnabled

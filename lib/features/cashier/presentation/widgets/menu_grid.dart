@@ -58,20 +58,27 @@ extension MenuGridMethods on _ProductListScreenState {
   }
 
   Future<void> _onProductTap(Product product) async {
-    final modifiers = await _fetchProductModifiers(product);
-    if (!mounted) return;
+    if (_isHandlingProductTap) return;
+    _isHandlingProductTap = true;
 
-    final config = await _showProductConfigModal(product, modifiers);
-    if (!mounted || config == null) {
-      return;
+    try {
+      final modifiers = await _fetchProductModifiers(product);
+      if (!mounted) return;
+
+      final config = await _showProductConfigModal(product, modifiers);
+      if (!mounted || config == null) {
+        return;
+      }
+
+      context.read<CartProvider>().addItem(
+        product,
+        quantity: config.quantity,
+        modifiers: config.cartModifiers,
+        modifiersData: config.modifiersData,
+      );
+    } finally {
+      _isHandlingProductTap = false;
     }
-
-    context.read<CartProvider>().addItem(
-      product,
-      quantity: config.quantity,
-      modifiers: config.cartModifiers,
-      modifiersData: config.modifiersData,
-    );
   }
 
   Future<List<ProductModifier>> _fetchProductModifiers(Product product) async {
