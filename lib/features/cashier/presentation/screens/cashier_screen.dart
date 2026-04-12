@@ -486,14 +486,10 @@ class _ProductListScreenState extends State<ProductListScreen>
     } catch (_) {}
 
     try {
-      final sevenDaysAgo = DateTime.now()
-          .subtract(const Duration(days: 7))
-          .toIso8601String();
       final ordersData = await supabase
           .from('orders')
           .select()
           .isFilter('deleted_at', null)
-          .gte('created_at', sevenDaysAgo)
           .order('created_at', ascending: false);
 
       final orders = (ordersData as List<dynamic>)
@@ -506,18 +502,13 @@ class _ProductListScreenState extends State<ProductListScreen>
       print('Error priming orders: $e');
     }
 
-    final sevenDaysAgo = DateTime.now()
-        .subtract(const Duration(days: 7))
-        .toIso8601String();
-
     try {
       final orderItemsData = await supabase
           .from('order_items')
           .select(
             'order_id, quantity, product_id, modifiers, products(*), orders!inner(deleted_at)',
           )
-          .isFilter('orders.deleted_at', null)
-          .gte('orders.created_at', sevenDaysAgo);
+          .isFilter('orders.deleted_at', null);
 
       final rows = (orderItemsData as List<dynamic>)
           .whereType<Map>()
