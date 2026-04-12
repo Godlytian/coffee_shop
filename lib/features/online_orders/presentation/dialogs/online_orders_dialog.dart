@@ -970,6 +970,10 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                     if (!confirmed) return;
 
                                                     try {
+                                                      final orderId =
+                                                          (selectedOrder['id']
+                                                                  as num)
+                                                              .toInt();
                                                       await supabase
                                                           .from('orders')
                                                           .update({
@@ -980,12 +984,10 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                                                                 OrderStatus
                                                                     .cancelled,
                                                           })
-                                                          .eq(
-                                                            'id',
-                                                            (selectedOrder['id']
-                                                                    as num)
-                                                                .toInt(),
-                                                          );
+                                                          .eq('id', orderId);
+                                                      await LocalOrderStoreRepository
+                                                          .instance
+                                                          .deleteOrder(orderId);
                                                       if (!mounted) return;
                                                       setDialogState(() {
                                                         selectedOrderId = null;

@@ -4,6 +4,32 @@ import 'package:workmanager/workmanager.dart';
 
 const String offlineSyncTask = 'offline_sync_task';
 
+bool _isShiftSingleOpenConstraintViolation(Object error) {
+  if (error is! PostgrestException) return false;
+  final lower = error.message.toLowerCase();
+  return error.code == '23505' &&
+      (lower.contains('uq_shift_one_open_per_branch_cashier') ||
+          lower.contains('uq shift one open per branch cashier'));
+}
+
+Future<int?> _findLatestOpenShiftId({
+  required SupabaseClient client,
+  required int cashierId,
+  String? branchId,
+}) async {
+  var query = client
+      .from('shifts')
+      .select('id')
+      .eq('status', 'open')
+      .eq('current_cashier_id', cashierId);
+  if (branchId != null && branchId.isNotEmpty) {
+    query = query.eq('branch_id', branchId);
+  }
+  final openRows = await query.order('started_at', ascending: false).limit(1);
+  if (openRows is! List || openRows.isEmpty) return null;
+  return ((openRows.first as Map<String, dynamic>)['id'] as num?)?.toInt();
+}
+
 @pragma('vm:entry-point')
 void backgroundSyncDispatcher() {
   Workmanager().executeTask((task, inputData) async {
@@ -86,19 +112,32 @@ void backgroundSyncDispatcher() {
           await queue.removePending(localTxnId);
         } else if (eventType == 'shift_open') {
           final shift = Map<String, dynamic>.from(payload['shift'] as Map);
-          final created = await client
-              .from('shifts')
-              .insert({
-                'branch_id': shift['branch_id'],
-                'status': 'open',
-                'current_cashier_id': shift['cashier_id'],
-                'started_at': shift['started_at'],
-                'opened_by': shift['opened_by'],
-              })
-              .select('id')
-              .single();
+          int? remoteShiftId;
+          try {
+            final created = await client
+                .from('shifts')
+                .insert({
+                  'branch_id': shift['branch_id'],
+                  'status': 'open',
+                  'current_cashier_id': shift['cashier_id'],
+                  'started_at': shift['started_at'],
+                  'opened_by': shift['opened_by'],
+                })
+                .select('id')
+                .single();
+            remoteShiftId = (created['id'] as num?)?.toInt();
+          } on PostgrestException catch (error) {
+            if (!_isShiftSingleOpenConstraintViolation(error)) rethrow;
+            final cashierId = (shift['cashier_id'] as num?)?.toInt();
+            if (cashierId == null) rethrow;
+            remoteShiftId = await _findLatestOpenShiftId(
+              client: client,
+              cashierId: cashierId,
+              branchId: shift['branch_id']?.toString(),
+            );
+            if (remoteShiftId == null) rethrow;
+          }
           final localShiftId = (shift['local_shift_id'] as num?)?.toInt();
-          final remoteShiftId = (created['id'] as num?)?.toInt();
           if (localShiftId != null && remoteShiftId != null) {
             localShiftToRemoteShift[localShiftId] = remoteShiftId;
           }

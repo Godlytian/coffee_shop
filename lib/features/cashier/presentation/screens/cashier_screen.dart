@@ -1652,6 +1652,11 @@ class _ProductListScreenState extends State<ProductListScreen>
     );
   }
 
+  bool _isRemoteSyncedOrderId(int? orderId) {
+    if (orderId == null) return false;
+    return orderId > 0 && orderId < 1000000000000;
+  }
+
   List<Map<String, dynamic>> _buildReceiptItems(CartProvider cart) {
     return cart.items.values
         .map((item) {
@@ -1722,7 +1727,7 @@ class _ProductListScreenState extends State<ProductListScreen>
         });
       }
       _showDropdownSnackbar(
-        (savedOrderId > 0)
+        _isRemoteSyncedOrderId(savedOrderId)
             ? 'Order saved successfully.'
             : 'saved Offline. sync later from app menu.',
       );
@@ -1790,7 +1795,7 @@ class _ProductListScreenState extends State<ProductListScreen>
         );
       }
 
-      if ((paidOrderId ?? 0) > 0) {
+      if (_isRemoteSyncedOrderId(paidOrderId)) {
         final prefs = await SharedPreferences.getInstance();
         final isAutoPrint = prefs.getBool('auto_print_receipt') ?? true;
         final shouldShowPopup =

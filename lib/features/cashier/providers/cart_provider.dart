@@ -141,6 +141,32 @@ class CartProvider extends ChangeNotifier {
     return error.code == '23503' && lower.contains('orders_shift_id_fkey');
   }
 
+  bool _isShiftSingleOpenConstraintViolation(Object error) {
+    if (error is! PostgrestException) return false;
+    final lower = error.message.toLowerCase();
+    return error.code == '23505' &&
+        (lower.contains('uq_shift_one_open_per_branch_cashier') ||
+            lower.contains('uq shift one open per branch cashier'));
+  }
+
+  Future<int?> _findLatestOpenShiftId({
+    required SupabaseClient supabase,
+    required int cashierId,
+    String? branchId,
+  }) async {
+    var query = supabase
+        .from('shifts')
+        .select('id')
+        .eq('status', 'open')
+        .eq('current_cashier_id', cashierId);
+    if (branchId != null && branchId.isNotEmpty) {
+      query = query.eq('branch_id', branchId);
+    }
+    final openRows = await query.order('started_at', ascending: false).limit(1);
+    if (openRows is! List || openRows.isEmpty) return null;
+    return ((openRows.first as Map<String, dynamic>)['id'] as num?)?.toInt();
+  }
+
   bool _isLocalTemporaryOrderId(int? orderId) {
     if (orderId == null) return false;
     // Offline fallback ids are unix-epoch based (13 digits).
@@ -332,20 +358,33 @@ class CartProvider extends ChangeNotifier {
             );
           } else if (eventType == 'shift_open') {
             final shift = Map<String, dynamic>.from(event['shift'] as Map);
-            final created = await supabase
-                .from('shifts')
-                .insert({
-                  'branch_id': shift['branch_id'],
-                  'status': 'open',
-                  'current_cashier_id': shift['cashier_id'],
-                  'started_at': shift['started_at'],
-                  'opened_by': shift['opened_by'],
-                })
-                .select('id')
-                .single();
+            int? remoteShiftId;
+            try {
+              final created = await supabase
+                  .from('shifts')
+                  .insert({
+                    'branch_id': shift['branch_id'],
+                    'status': 'open',
+                    'current_cashier_id': shift['cashier_id'],
+                    'started_at': shift['started_at'],
+                    'opened_by': shift['opened_by'],
+                  })
+                  .select('id')
+                  .single();
+              remoteShiftId = (created['id'] as num?)?.toInt();
+            } on PostgrestException catch (error) {
+              if (!_isShiftSingleOpenConstraintViolation(error)) rethrow;
+              final cashierId = (shift['cashier_id'] as num?)?.toInt();
+              if (cashierId == null) rethrow;
+              remoteShiftId = await _findLatestOpenShiftId(
+                supabase: supabase,
+                cashierId: cashierId,
+                branchId: shift['branch_id']?.toString(),
+              );
+              if (remoteShiftId == null) rethrow;
+            }
 
             final localShiftId = (shift['local_shift_id'] as num?)?.toInt();
-            final remoteShiftId = (created['id'] as num?)?.toInt();
             if (localShiftId != null && remoteShiftId != null) {
               localShiftToRemoteShift[localShiftId] = remoteShiftId;
             }
@@ -1259,6 +1298,7 @@ class CartProvider extends ChangeNotifier {
           ? totalAmount.toInt()
           : totalAmount;
       final localTxnId = _uuid.v4();
+      final createdAt = DateTime.now().toIso8601String();
 
       String composeNotes() {
         final tableNote = (tableName == null || tableName.isEmpty)
@@ -1296,6 +1336,7 @@ class CartProvider extends ChangeNotifier {
             'shift_id': shiftId,
             'notes': composeNotes(),
             'idempotency_key': localTxnId,
+            'created_at': createdAt,
           };
           orderPayload = Map<String, dynamic>.from(payload);
 
@@ -1390,6 +1431,7 @@ class CartProvider extends ChangeNotifier {
             'shift_id': shiftId,
             'notes': composeNotes(),
             'idempotency_key': localTxnId,
+            'created_at': createdAt,
           };
         }
 
@@ -1447,7 +1489,7 @@ class CartProvider extends ChangeNotifier {
         if (shouldClearCart) {
           clearCart();
         }
-        return -1;
+        return offlineOrderId;
       }
     })();
 
