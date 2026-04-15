@@ -178,29 +178,132 @@ class ReportsRepository {
     }
   }
 
-  Future<Map<String, double>> fetchShiftSummary() async {
+  Future<Map<String, double>> fetchShiftSummary([DateTime? targetDate]) async {
     try {
       final db = await _openOrdersDb();
+
+      // SQL remains identical: highly optimized and clean.
       final rows = await db.rawQuery(r'''
         SELECT
+          json_extract(payload_json, '$.shift_id') as shift_id,
+          MIN(COALESCE(created_at, json_extract(payload_json, '$.created_at'))) as start_time,
+          SUM(COALESCE(json_extract(payload_json, '$.total_price'), 0)) as shift_total,
           SUM(CASE
                 WHEN json_extract(payload_json, '$.payment_method') = 'cash'
                 THEN COALESCE(json_extract(payload_json, '$.total_price'), 0)
                 ELSE 0
-              END) as cash_total,
-          SUM(COALESCE(json_extract(payload_json, '$.total_price'), 0)) as total
+              END) as cash_total
         FROM local_orders
         WHERE COALESCE(json_extract(payload_json, '$.status'), status) IN ('completed', 'paid')
-        ''');
-      final cash = (rows.first['cash_total'] as num?)?.toDouble() ?? 0;
-      final total = (rows.first['total'] as num?)?.toDouble() ?? 0;
+          AND json_extract(payload_json, '$.shift_id') IS NOT NULL
+        GROUP BY shift_id
+      ''');
+
+      var total = 0.0;
+      var cash = 0.0;
+
+      // 1. Collect valid shifts into a list for safe chronological sorting
+      List<Map<String, dynamic>> dailyShifts = [];
+
+      for (final row in rows) {
+        final shiftIdStr = row['shift_id']?.toString();
+        if (shiftIdStr == null) continue;
+        final shiftId = int.tryParse(shiftIdStr) ?? 0;
+
+        final startRaw = row['start_time']?.toString();
+        final localStart = _parseOrderDateToLocal(startRaw);
+
+        // Discard invalid dates or dates outside our target day
+        if (localStart == null) continue;
+        if (targetDate != null && !_isSameCalendarDay(localStart, targetDate)) {
+          continue;
+        }
+
+        final shiftTotal = (row['shift_total'] as num?)?.toDouble() ?? 0;
+        final shiftCash = (row['cash_total'] as num?)?.toDouble() ?? 0;
+
+        total += shiftTotal;
+        cash += shiftCash;
+
+        dailyShifts.add({
+          'shift_id': shiftId,
+          'start_time': localStart,
+          'shift_total': shiftTotal,
+        });
+      }
+
+      // 2. Sort strictly chronologically (earliest first)
+      // If two shifts happen to start at the exact same millisecond, fallback to shift_id
+      dailyShifts.sort((a, b) {
+        final timeA = a['start_time'] as DateTime;
+        final timeB = b['start_time'] as DateTime;
+        int timeCompare = timeA.compareTo(timeB);
+        if (timeCompare != 0) return timeCompare;
+        return (a['shift_id'] as int).compareTo(b['shift_id'] as int);
+      });
+
+      var shift1Total = 0.0;
+      var shift2Total = 0.0;
+
+      // 3. Dynamically assign Shift 1 and Shift 2 based on order of appearance
+      for (int i = 0; i < dailyShifts.length; i++) {
+        final shift = dailyShifts[i];
+        final startTime = shift['start_time'] as DateTime;
+        final shiftTotal = shift['shift_total'] as double;
+
+        if (i == 0) {
+          // Earliest shift of the day.
+          // Sunday exception: If it starts afternoon (>= 12:00), push to Shift 2.
+          if (startTime.weekday == DateTime.sunday && startTime.hour >= 12) {
+            shift2Total += shiftTotal;
+          } else {
+            shift1Total += shiftTotal;
+          }
+        } else {
+          // Any subsequent shift opened on the same day goes to Shift 2
+          shift2Total += shiftTotal;
+        }
+      }
+
       return {
         'expected_cash_drawer': cash,
-        'actual_cash_drawer': cash,
+        'actual_cash_drawer': cash, // Kept matching expected per your setup
         'total': total,
+        'shift_1': shift1Total,
+        'shift_2': shift2Total,
       };
     } on DatabaseException {
-      return {'expected_cash_drawer': 0, 'actual_cash_drawer': 0, 'total': 0};
+      return {
+        'expected_cash_drawer': 0,
+        'actual_cash_drawer': 0,
+        'total': 0,
+        'shift_1': 0,
+        'shift_2': 0,
+      };
     }
+  }
+
+  DateTime? _parseOrderDateToLocal(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return null;
+    final normalized = raw.replaceFirst(' ', 'T');
+
+    // Add safety net: if missing timezone marker, force UTC so .toLocal() doesn't double-shift
+    String safeString = normalized;
+    if (safeString.endsWith('+00')) {
+      safeString = safeString.substring(0, safeString.length - 3) + 'Z';
+    } else if (!safeString.contains('Z') &&
+        !safeString.contains('+') &&
+        !safeString.contains('-')) {
+      safeString += 'Z';
+    }
+
+    final parsed = DateTime.tryParse(safeString);
+    return parsed?.toLocal();
+  }
+
+  bool _isSameCalendarDay(DateTime a, DateTime b) {
+    final lhs = a.toLocal();
+    final rhs = b.toLocal();
+    return lhs.year == rhs.year && lhs.month == rhs.month && lhs.day == rhs.day;
   }
 }

@@ -1,4 +1,5 @@
 import 'package:coffee_shop/features/reports/data/reports_repository.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
 class ReportsScreen extends StatefulWidget {
@@ -11,6 +12,19 @@ class ReportsScreen extends StatefulWidget {
 class _ReportsScreenState extends State<ReportsScreen> {
   final _repo = ReportsRepository.instance;
   DateTime _selectedDate = DateTime.now();
+  bool _showTopItemsBarChart = false;
+
+  // Formatter for pretty numbers (e.g., 1,500,000 -> 1.5M, 150,000 -> 150K)
+  String _formatCompact(double value) {
+    if (value == 0) return '0';
+    if (value >= 1000000) {
+      return '${(value / 1000000).toStringAsFixed(1).replaceAll(RegExp(r'\.0$'), '')}M';
+    }
+    if (value >= 1000) {
+      return '${(value / 1000).toStringAsFixed(0)}K';
+    }
+    return value.toStringAsFixed(0);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -41,42 +55,19 @@ class _ReportsScreenState extends State<ReportsScreen> {
             return const Center(child: CircularProgressIndicator());
           }
           final data = snapshot.data!;
+          final isDesktop = MediaQuery.of(context).size.width > 900;
+
           return GridView.count(
-            crossAxisCount: MediaQuery.of(context).size.width > 900 ? 3 : 1,
+            crossAxisCount: isDesktop ? 2 : 1,
             padding: const EdgeInsets.all(16),
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
+            crossAxisSpacing: 16,
+            mainAxisSpacing: 16,
+            childAspectRatio: isDesktop ? 1.5 : 1.2,
             children: [
-              _card(
-                'Daily Sales',
-                'Rp ${(data['daily_sales'] as double).toStringAsFixed(0)}',
-              ),
-              _card(
-                'Payment Methods',
-                (data['payment_methods'] as Map).entries
-                    .map(
-                      (entry) =>
-                          '${entry.key}: ${((entry.value as double) * 100).toStringAsFixed(1)}%',
-                    )
-                    .join('\n'),
-              ),
-              _card(
-                'Top Selling Items',
-                (data['top_items'] as List)
-                    .map(
-                      (row) =>
-                          '${row['product_name'] ?? 'Product ${row['product_id']}'}: ${row['qty']}',
-                    )
-                    .join('\n'),
-              ),
-              _card(
-                'Shift Summary',
-                'Expected Cash: Rp ${((data['shift_summary'] as Map)['expected_cash_drawer'] as double).toStringAsFixed(0)}\nActual Cash: Rp ${((data['shift_summary'] as Map)['actual_cash_drawer'] as double).toStringAsFixed(0)}',
-              ),
-              _card(
-                'Sync Status',
-                'Offline: ${(data['sync_counts'] as Map)['offline']}\nSynced: ${(data['sync_counts'] as Map)['synced']}',
-              ),
+              _buildWeeklySalesChart(data['weekly_sales']),
+              _buildWeeklyShiftSummaryChart(data['weekly_shifts']),
+              _buildPaymentMethodsChart(data['payment_methods']),
+              _buildTopItemsChart(data['top_items']),
             ],
           );
         },
@@ -84,36 +75,400 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
-  Widget _card(String title, String body) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            Expanded(child: SingleChildScrollView(child: Text(body))),
-          ],
+  Widget _buildWeeklySalesChart(List<double> weeklySales) {
+    return _ChartCard(
+      title: 'Daily Sales (Last 7 Days)',
+      child: BarChart(
+        BarChartData(
+          barTouchData: BarTouchData(
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                return BarTooltipItem(
+                  'Rp ${_formatCompact(rod.toY)}',
+                  const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                );
+              },
+            ),
+          ),
+          barGroups: weeklySales.asMap().entries.map((e) {
+            return BarChartGroupData(
+              x: e.key,
+              barRods: [
+                BarChartRodData(
+                  toY: e.value,
+                  color: Theme.of(context).primaryColor,
+                  width: 20,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ],
+            );
+          }).toList(),
+          titlesData: FlTitlesData(
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  final d = _selectedDate.subtract(
+                    Duration(days: 6 - value.toInt()),
+                  );
+                  final weekdays = [
+                    'Mon',
+                    'Tue',
+                    'Wed',
+                    'Thu',
+                    'Fri',
+                    'Sat',
+                    'Sun',
+                  ];
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Text(
+                      weekdays[d.weekday - 1],
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                  );
+                },
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value == 0) return const SizedBox();
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8.0),
+                    child: Text(
+                      _formatCompact(value),
+                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      textAlign: TextAlign.right,
+                    ),
+                  );
+                },
+              ),
+            ),
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+          ),
+          borderData: FlBorderData(show: false),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            getDrawingHorizontalLine: (value) =>
+                FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
+          ),
         ),
       ),
     );
   }
 
+  Widget _buildWeeklyShiftSummaryChart(List<Map<String, double>> weeklyShifts) {
+    return _ChartCard(
+      title: 'Shift 1 vs Shift 2 Sales (Weekly)',
+      action: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _LegendItem(color: Colors.blue, text: 'S1 (< 15:00)'),
+          SizedBox(width: 8),
+          _LegendItem(color: Colors.purple, text: 'S2 (15:00+)'),
+        ],
+      ),
+      child: BarChart(
+        BarChartData(
+          barTouchData: BarTouchData(
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final shiftName = rodIndex == 0 ? 'Shift 1' : 'Shift 2';
+                return BarTooltipItem(
+                  '$shiftName\nRp ${_formatCompact(rod.toY)}',
+                  const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                );
+              },
+            ),
+          ),
+          barGroups: weeklyShifts.asMap().entries.map((e) {
+            return BarChartGroupData(
+              x: e.key,
+              barsSpace: 4,
+              barRods: [
+                BarChartRodData(
+                  toY: e.value['shift_1'] ?? 0,
+                  color: Colors.blue,
+                  width: 12,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                BarChartRodData(
+                  toY: e.value['shift_2'] ?? 0,
+                  color: Colors.purple,
+                  width: 12,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ],
+            );
+          }).toList(),
+          titlesData: FlTitlesData(
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  final d = _selectedDate.subtract(
+                    Duration(days: 6 - value.toInt()),
+                  );
+                  final weekdays = [
+                    'Mon',
+                    'Tue',
+                    'Wed',
+                    'Thu',
+                    'Fri',
+                    'Sat',
+                    'Sun',
+                  ];
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Text(
+                      weekdays[d.weekday - 1],
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                  );
+                },
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value == 0) return const SizedBox();
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8.0),
+                    child: Text(
+                      _formatCompact(value),
+                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      textAlign: TextAlign.right,
+                    ),
+                  );
+                },
+              ),
+            ),
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+          ),
+          borderData: FlBorderData(show: false),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            getDrawingHorizontalLine: (value) =>
+                FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPaymentMethodsChart(Map<String, double> methods) {
+    final hasData = (methods['cash'] ?? 0) > 0 || (methods['qris'] ?? 0) > 0;
+
+    return _ChartCard(
+      title: 'Payment Methods',
+      child: !hasData
+          ? const Center(child: Text('No payment data available'))
+          : PieChart(
+              PieChartData(
+                sections: [
+                  PieChartSectionData(
+                    value: methods['cash'] ?? 0,
+                    title:
+                        'Cash\n${((methods['cash'] ?? 0) * 100).toStringAsFixed(1)}%',
+                    color: Colors.green,
+                    radius: 60,
+                    titleStyle: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  PieChartSectionData(
+                    value: methods['qris'] ?? 0,
+                    title:
+                        'QRIS\n${((methods['qris'] ?? 0) * 100).toStringAsFixed(1)}%',
+                    color: Colors.orange,
+                    radius: 60,
+                    titleStyle: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+                sectionsSpace: 2,
+                centerSpaceRadius: 40,
+              ),
+            ),
+    );
+  }
+
+  Widget _buildTopItemsChart(List<Map<String, dynamic>> topItems) {
+    if (topItems.isEmpty) {
+      return const _ChartCard(
+        title: 'Top Selling Items',
+        child: Center(child: Text('No items sold')),
+      );
+    }
+
+    final colors = [
+      Colors.blue,
+      Colors.red,
+      Colors.green,
+      Colors.orange,
+      Colors.purple,
+    ];
+
+    return _ChartCard(
+      title: 'Top Selling Items',
+      action: IconButton(
+        icon: Icon(_showTopItemsBarChart ? Icons.pie_chart : Icons.bar_chart),
+        onPressed: () =>
+            setState(() => _showTopItemsBarChart = !_showTopItemsBarChart),
+      ),
+      child: _showTopItemsBarChart
+          ? BarChart(
+              BarChartData(
+                barTouchData: BarTouchData(
+                  touchTooltipData: BarTouchTooltipData(
+                    getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                      return BarTooltipItem(
+                        '${topItems[group.x.toInt()]['product_name']}\nQty: ${rod.toY.toInt()}',
+                        const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                barGroups: topItems.asMap().entries.map((e) {
+                  return BarChartGroupData(
+                    x: e.key,
+                    barRods: [
+                      BarChartRodData(
+                        toY: (e.value['qty'] as num).toDouble(),
+                        color: colors[e.key % colors.length],
+                        width: 20,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ],
+                  );
+                }).toList(),
+                titlesData: FlTitlesData(
+                  bottomTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      getTitlesWidget: (value, meta) {
+                        if (value.toInt() >= topItems.length)
+                          return const SizedBox();
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(
+                            topItems[value.toInt()]['product_name']
+                                .toString()
+                                .split(' ')
+                                .first,
+                            style: const TextStyle(fontSize: 10),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  leftTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 30,
+                      getTitlesWidget: (value, meta) {
+                        if (value == 0 || value % 1 != 0)
+                          return const SizedBox();
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8.0),
+                          child: Text(
+                            value.toInt().toString(),
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey,
+                            ),
+                            textAlign: TextAlign.right,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  topTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  rightTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                ),
+                borderData: FlBorderData(show: false),
+                gridData: FlGridData(
+                  show: true,
+                  drawVerticalLine: false,
+                  getDrawingHorizontalLine: (value) => FlLine(
+                    color: Colors.grey.withOpacity(0.2),
+                    strokeWidth: 1,
+                  ),
+                ),
+              ),
+            )
+          : PieChart(
+              PieChartData(
+                sections: topItems.asMap().entries.map((e) {
+                  return PieChartSectionData(
+                    value: (e.value['qty'] as num).toDouble(),
+                    title:
+                        '${e.value['product_name'].toString().split(' ').first}\n(${e.value['qty']})',
+                    color: colors[e.key % colors.length],
+                    radius: 70,
+                    titleStyle: const TextStyle(
+                      fontSize: 11,
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  );
+                }).toList(),
+                sectionsSpace: 2,
+                centerSpaceRadius: 30,
+              ),
+            ),
+    );
+  }
+
   Future<Map<String, dynamic>> _loadData() async {
-    double daily = 0;
+    List<double> weeklySales = [];
+    List<Map<String, double>> weeklyShifts = [];
+
+    for (int i = 6; i >= 0; i--) {
+      final d = _selectedDate.subtract(Duration(days: i));
+      weeklySales.add(await _repo.fetchDailySalesSummary(d));
+      weeklyShifts.add(await _repo.fetchShiftSummary(d));
+    }
+
     Map<String, double> methods = {'cash': 0, 'qris': 0};
     List<Map<String, dynamic>> topItems = <Map<String, dynamic>>[];
-    Map<String, double> shiftSummary = {
-      'expected_cash_drawer': 0,
-      'actual_cash_drawer': 0,
-      'total': 0,
-    };
-    Map<String, int> syncCounts = {'synced': 0, 'offline': 0};
 
-    try {
-      daily = await _repo.fetchDailySalesSummary(_selectedDate);
-    } catch (_) {}
     try {
       methods = await _repo.fetchPaymentMethodBreakdown(_selectedDate);
     } catch (_) {}
@@ -123,19 +478,74 @@ class _ReportsScreenState extends State<ReportsScreen> {
         limit: 5,
       );
     } catch (_) {}
-    try {
-      shiftSummary = await _repo.fetchShiftSummary();
-    } catch (_) {}
-    try {
-      syncCounts = await _repo.fetchSyncStatusCounts();
-    } catch (_) {}
 
     return {
-      'daily_sales': daily,
+      'weekly_sales': weeklySales,
       'payment_methods': methods,
       'top_items': topItems,
-      'shift_summary': shiftSummary,
-      'sync_counts': syncCounts,
+      'weekly_shifts': weeklyShifts,
     };
+  }
+}
+
+// Helper Widget for custom chart legends
+class _LegendItem extends StatelessWidget {
+  final Color color;
+  final String text;
+
+  const _LegendItem({required this.color, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 4),
+        Text(text, style: const TextStyle(fontSize: 10, color: Colors.grey)),
+      ],
+    );
+  }
+}
+
+class _ChartCard extends StatelessWidget {
+  final String title;
+  final Widget child;
+  final Widget? action;
+
+  const _ChartCard({required this.title, required this.child, this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                if (action != null) action!,
+              ],
+            ),
+            const SizedBox(height: 16),
+            Expanded(child: child),
+          ],
+        ),
+      ),
+    );
   }
 }

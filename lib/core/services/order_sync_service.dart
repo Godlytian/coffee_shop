@@ -14,10 +14,15 @@ class OrderSyncService {
   Future<void> forceReconcile() async {
     await LocalOrderStoreRepository.instance.init();
     try {
+      final sevenDaysAgoIso = DateTime.now()
+          .toUtc()
+          .subtract(const Duration(days: 7))
+          .toIso8601String();
       final rows = await supabase
           .from('orders')
           .select()
           .isFilter('deleted_at', null)
+          .gte('created_at', sevenDaysAgoIso)
           .order('created_at', ascending: false);
       final mapped = rows
           .map((row) => Map<String, dynamic>.from(row))
@@ -26,7 +31,7 @@ class OrderSyncService {
     } catch (e) {
       print('Order Sync forceReconcile error: $e');
     }
-  }
+  } 
 
   Future<void> start() async {
     if (_started) return;

@@ -238,6 +238,56 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
     return null;
   }
 
+  DateTime? _parseOrderTimestampUtc(Map<String, dynamic> order) {
+    final updatedRaw = order['updated_at']?.toString();
+    final createdRaw = order['created_at']?.toString();
+    final updated = updatedRaw == null ? null : DateTime.tryParse(updatedRaw);
+    if (updated != null) return updated.toUtc();
+    final created = createdRaw == null ? null : DateTime.tryParse(createdRaw);
+    return created?.toUtc();
+  }
+
+  List<Map<String, dynamic>> _dedupeOrdersById(
+    List<Map<String, dynamic>> rows,
+  ) {
+    final byId = <int, Map<String, dynamic>>{};
+    final withoutId = <Map<String, dynamic>>[];
+
+    for (final raw in rows) {
+      final order = Map<String, dynamic>.from(raw);
+      final id = _toInt(order['id']);
+      if (id == null) {
+        withoutId.add(order);
+        continue;
+      }
+
+      final existing = byId[id];
+      if (existing == null) {
+        byId[id] = order;
+        continue;
+      }
+
+      final existingTimestamp = _parseOrderTimestampUtc(existing);
+      final candidateTimestamp = _parseOrderTimestampUtc(order);
+      if (existingTimestamp == null && candidateTimestamp == null) {
+        byId[id] = order;
+        continue;
+      }
+      if (existingTimestamp == null) {
+        byId[id] = order;
+        continue;
+      }
+      if (candidateTimestamp == null) {
+        continue;
+      }
+      if (candidateTimestamp.isAfter(existingTimestamp)) {
+        byId[id] = order;
+      }
+    }
+
+    return <Map<String, dynamic>>[...byId.values, ...withoutId];
+  }
+
   Future<Map<int, String>> _fetchCashierNamesByIds(Set<int> ids) async {
     if (ids.isEmpty) return <int, String>{};
     try {
@@ -652,9 +702,9 @@ extension OnlineOrdersDialogMethods on _ProductListScreenState {
                           ),
                         )
                         .toList(growable: false);
-                    final rawOrders = hasRemoteError
-                        ? offlineOrders
-                        : remoteOrders;
+                    final rawOrders = _dedupeOrdersById(
+                      hasRemoteError ? offlineOrders : remoteOrders,
+                    );
                     final normalizedSearch = searchQuery.trim().toLowerCase();
 
                     final filtered = rawOrders

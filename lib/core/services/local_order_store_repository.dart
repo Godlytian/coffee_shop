@@ -140,31 +140,34 @@ class LocalOrderStoreRepository {
     List<Map<String, dynamic>> activeRemoteOrders,
   ) async {
     await init();
+    await upsertOrders(activeRemoteOrders);
+    await _emitAll();
+  }
 
-    final remoteIds = activeRemoteOrders
-        .map((o) => (o['id'] as num).toInt())
-        .toSet();
-
-    final localRows = await _database.query(_table, columns: ['id']);
-    final localIds = localRows.map((row) => (row['id'] as num).toInt()).toSet();
-
-    final ghostIds = localIds
-        .difference(remoteIds)
-        .where((id) => id > 0)
-        .toSet();
-
-    if (ghostIds.isNotEmpty) {
-      final batch = _database.batch();
-      for (final id in ghostIds) {
-        batch.delete(_table, where: 'id = ?', whereArgs: [id]);
-      }
-      await batch.commit();
-      print('Reconciled & Deleted Ghost Orders: $ghostIds');
+  DateTime? _extractCreatedAtUtc(Map<String, Object?> row) {
+    final createdAt = row['created_at']?.toString();
+    final createdAtFromColumn = _tryParseUtc(createdAt);
+    if (createdAtFromColumn != null) {
+      return createdAtFromColumn;
     }
 
-    await upsertOrders(activeRemoteOrders);
+    final payloadJson = row['payload_json']?.toString();
+    if (payloadJson == null || payloadJson.isEmpty) return null;
+    try {
+      final payload = jsonDecode(payloadJson);
+      if (payload is! Map) return null;
+      final payloadCreatedAt = payload['created_at']?.toString();
+      return _tryParseUtc(payloadCreatedAt);
+    } catch (_) {
+      return null;
+    }
+  }
 
-    await _emitAll();
+  DateTime? _tryParseUtc(String? value) {
+    if (value == null || value.isEmpty) return null;
+    final parsed = DateTime.tryParse(value);
+    if (parsed == null) return null;
+    return parsed.toUtc();
   }
 
   Future<List<Map<String, dynamic>>> fetchAllOrders() async {
