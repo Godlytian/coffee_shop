@@ -89,8 +89,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 vertical: 8,
               ),
               getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final date = _selectedDate.subtract(
+                  Duration(days: 6 - group.x.toInt()),
+                );
+                final dateStr = _formatDateShort(date);
+
                 return BarTooltipItem(
-                  'Total Sales\n',
+                  'Total Sales ($dateStr)\n',
                   const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -216,9 +221,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
               ),
               tooltipMargin: 8,
               getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final date = _selectedDate.subtract(
+                  Duration(days: 6 - group.x.toInt()),
+                );
+                final dateStr = _formatDateShort(date);
+
                 final shiftName = rodIndex == 0 ? 'Shift 1' : 'Shift 2';
+
                 return BarTooltipItem(
-                  '$shiftName\n',
+                  '$shiftName ($dateStr)\n',
                   const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -540,6 +551,24 @@ String _formatFull(double value) {
         RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
         (Match m) => '${m[1]}.',
       );
+}
+
+String _formatDateShort(DateTime date) {
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  return '${date.day} ${months[date.month - 1]}';
 }
 
 // Helper Widget for custom chart legends

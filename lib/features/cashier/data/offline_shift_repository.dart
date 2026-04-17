@@ -153,6 +153,32 @@ class OfflineShiftRepository {
     return localShiftId;
   }
 
+  Future<void> downloadRecentShifts(SupabaseClient supabase) async {
+    try {
+      final sevenDaysAgo = DateTime.now().subtract(const Duration(days: 7));
+
+      final response = await supabase
+          .from('shifts')
+          .select()
+          // .eq('branch_id', yourBranchId) // Uncomment if you have multiple branches!
+          .gte('started_at', sevenDaysAgo.toIso8601String())
+          .order('started_at', ascending: false);
+
+      final List<Map<String, dynamic>> fetchedShifts =
+          List<Map<String, dynamic>>.from(response);
+
+      if (fetchedShifts.isNotEmpty) {
+        await replaceCachedShifts(fetchedShifts);
+        print(
+          'Successfully synced ${fetchedShifts.length} shifts for the last 7 days.',
+        );
+      }
+    } catch (e) {
+      print('=== Error downloading recent shifts ===');
+      print(e.toString());
+    }
+  }
+
   Future<List<Map<String, dynamic>>> getPendingShifts() async {
     await init();
     final rows = await _database.query(

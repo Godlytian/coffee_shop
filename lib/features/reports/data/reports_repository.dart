@@ -183,13 +183,12 @@ class ReportsRepository {
     try {
       final db = await _openOrdersDb();
 
-      // Default to today if no specific date is passed from the UI
       final queryDate = targetDate ?? DateTime.now();
 
-      // 1. Pull aggregated totals per shift
       String query = r'''
       SELECT
         json_extract(payload_json, '$.shift_id') as shift_id,
+        MIN(COALESCE(created_at, json_extract(payload_json, '$.created_at'))) as fallback_time,
         SUM(COALESCE(json_extract(payload_json, '$.total_price'), 0)) as shift_total,
         SUM(CASE
               WHEN json_extract(payload_json, '$.payment_method') = 'cash'
@@ -204,7 +203,6 @@ class ReportsRepository {
 
       final rows = await db.rawQuery(query);
 
-      // 2. Pull the cached shifts mapping
       final shiftRepo = OfflineShiftRepository();
       final cachedShifts = await shiftRepo.getCachedShifts();
 
@@ -226,35 +224,33 @@ class ReportsRepository {
         final shiftIdStr = row['shift_id']?.toString();
         if (shiftIdStr == null) continue;
 
-        final startedAtStr = shiftTimeMap[shiftIdStr];
-        if (startedAtStr == null)
-          continue; // Skip if we can't find the shift time
+        String? startedAtStr = shiftTimeMap[shiftIdStr];
+        if (startedAtStr == null || startedAtStr.isEmpty) {
+          startedAtStr = row['fallback_time']?.toString();
+        }
 
-        final utcTime = DateTime.tryParse(startedAtStr)?.toUtc();
-        if (utcTime == null) continue;
+        if (startedAtStr == null) continue;
 
-        // 3. Convert to WITA (UTC+8)
+        final parsedTime = DateTime.tryParse(startedAtStr);
+        if (parsedTime == null) continue;
+
+        final utcTime = parsedTime.isUtc ? parsedTime : parsedTime.toUtc();
+
         final witaTime = utcTime.add(const Duration(hours: 8));
 
-        // ==========================================
-        // THE FIX: strictly filter by the requested day!
-        // ==========================================
         if (witaTime.year != queryDate.year ||
             witaTime.month != queryDate.month ||
             witaTime.day != queryDate.day) {
-          // If the shift didn't happen on the targetDate, skip it entirely.
           continue;
         }
 
-        // If we pass the date check, add up the totals
         final shiftTotal = (row['shift_total'] as num?)?.toDouble() ?? 0;
         final shiftCash = (row['cash_total'] as num?)?.toDouble() ?? 0;
 
         total += shiftTotal;
         cash += shiftCash;
 
-        // 4. Categorize by hour block
-        int shiftNumber = 2; // Default to shift 2
+        int shiftNumber = 2;
         if (witaTime.hour >= 6 && witaTime.hour <= 12) {
           shiftNumber = 1;
         }

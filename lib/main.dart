@@ -4,6 +4,7 @@ import 'package:coffee_shop/app.dart';
 import 'package:coffee_shop/core/services/background_sync_service.dart';
 import 'package:coffee_shop/core/services/order_notification_service.dart';
 import 'package:coffee_shop/features/cashier/providers/cart_provider.dart';
+import 'package:coffee_shop/features/cashier/data/offline_shift_repository.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
@@ -40,6 +41,9 @@ Future<void> _initSupabaseInBackground() async {
     ).timeout(const Duration(seconds: 8));
 
     await _signInTerminalIfNeeded();
+
+    final client = Supabase.instance.client;
+    await OfflineShiftRepository().downloadRecentShifts(client);
 
     await OrderNotificationService.instance.initialize();
   } catch (_) {
