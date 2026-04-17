@@ -128,7 +128,8 @@ extension CashierControllerMethods on _ProductListScreenState {
       'subtotal': total,
       'discount_total': 0,
       'notes': notes ?? existing['notes'],
-      'created_at': existing['created_at'] ?? DateTime.now().toIso8601String(),
+      'created_at':
+          existing['created_at'] ?? DateTime.now().toUtc().toIso8601String(),
       'order_source': existing['order_source'] ?? 'cashier',
     });
   }
@@ -467,7 +468,7 @@ extension CashierControllerMethods on _ProductListScreenState {
         );
 
         final targetOrderId = await _generateOfflineDailyUniqueOrderId();
-        final createdAt = DateTime.now().toIso8601String();
+        final createdAt = DateTime.now().toUtc().toIso8601String();
         final sourceNotes = sourceOrder['notes']?.toString();
         final targetOrder = <String, dynamic>{
           'id': targetOrderId,

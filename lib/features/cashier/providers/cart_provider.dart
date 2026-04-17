@@ -784,7 +784,7 @@ class CartProvider extends ChangeNotifier {
     _cartGroups[index] = _cartGroups[index].copyWith(
       paymentStatus: 'paid',
       amountPaid: amount,
-      closedAt: DateTime.now().toIso8601String(),
+      closedAt: DateTime.now().toUtc().toIso8601String(),
       closedBy: cashierId,
     );
     _persistCartSnapshot();
@@ -1202,7 +1202,7 @@ class CartProvider extends ChangeNotifier {
         'order_source': existingOrderSource ?? 'cashier',
         'created_at':
             existingOrder['created_at']?.toString() ??
-            DateTime.now().toIso8601String(),
+            DateTime.now().toUtc().toIso8601String(),
       };
 
       try {
@@ -1298,8 +1298,7 @@ class CartProvider extends ChangeNotifier {
           ? totalAmount.toInt()
           : totalAmount;
       final localTxnId = _uuid.v4();
-      final createdAt = DateTime.now().toIso8601String();
-
+      final createdAt = DateTime.now().toUtc().toIso8601String();
       String composeNotes() {
         final tableNote = (tableName == null || tableName.isEmpty)
             ? ''
