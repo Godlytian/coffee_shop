@@ -81,14 +81,31 @@ class _ReportsScreenState extends State<ReportsScreen> {
       child: BarChart(
         BarChartData(
           barTouchData: BarTouchData(
+            enabled: true,
             touchTooltipData: BarTouchTooltipData(
+              getTooltipColor: (group) => Colors.blueGrey.withOpacity(0.9),
+              tooltipPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 8,
+              ),
               getTooltipItem: (group, groupIndex, rod, rodIndex) {
                 return BarTooltipItem(
-                  'Rp ${_formatCompact(rod.toY)}',
+                  'Total Sales\n',
                   const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
+                    fontSize: 14,
                   ),
+                  children: [
+                    TextSpan(
+                      text: 'Rp ${_formatFull(rod.toY)}',
+                      style: const TextStyle(
+                        color: Colors.greenAccent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -101,7 +118,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   toY: e.value,
                   color: Theme.of(context).primaryColor,
                   width: 20,
-                  borderRadius: BorderRadius.circular(4),
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(4),
+                  ),
                 ),
               ],
             );
@@ -111,18 +130,23 @@ class _ReportsScreenState extends State<ReportsScreen> {
               sideTitles: SideTitles(
                 showTitles: true,
                 getTitlesWidget: (value, meta) {
+                  final index = value.toInt();
+                  if (index < 0 || index >= weeklySales.length)
+                    return const SizedBox();
+
                   final d = _selectedDate.subtract(
-                    Duration(days: 6 - value.toInt()),
+                    Duration(days: (weeklySales.length - 1) - index),
                   );
                   final weekdays = [
-                    'Mon',
-                    'Tue',
-                    'Wed',
-                    'Thu',
-                    'Fri',
-                    'Sat',
-                    'Sun',
+                    'Sen',
+                    'Sel',
+                    'Rab',
+                    'Kam',
+                    'Jum',
+                    'Sab',
+                    'Min',
                   ];
+
                   return Padding(
                     padding: const EdgeInsets.only(top: 8.0),
                     child: Text(
@@ -175,23 +199,41 @@ class _ReportsScreenState extends State<ReportsScreen> {
       action: const Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _LegendItem(color: Colors.blue, text: 'S1 (< 15:00)'),
+          _LegendItem(color: Colors.blue, text: 'S1 (Morning)'),
           SizedBox(width: 8),
-          _LegendItem(color: Colors.purple, text: 'S2 (15:00+)'),
+          _LegendItem(color: Colors.purple, text: 'S2 (Evening)'),
         ],
       ),
       child: BarChart(
         BarChartData(
           barTouchData: BarTouchData(
+            enabled: true,
             touchTooltipData: BarTouchTooltipData(
+              getTooltipColor: (group) => Colors.blueGrey.withOpacity(0.9),
+              tooltipPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 8,
+              ),
+              tooltipMargin: 8,
               getTooltipItem: (group, groupIndex, rod, rodIndex) {
                 final shiftName = rodIndex == 0 ? 'Shift 1' : 'Shift 2';
                 return BarTooltipItem(
-                  '$shiftName\nRp ${_formatCompact(rod.toY)}',
+                  '$shiftName\n',
                   const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
+                    fontSize: 14,
                   ),
+                  children: [
+                    TextSpan(
+                      text: 'Rp ${_formatFull(rod.toY)}',
+                      style: const TextStyle(
+                        color: Colors.yellow,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -204,14 +246,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 BarChartRodData(
                   toY: e.value['shift_1'] ?? 0,
                   color: Colors.blue,
-                  width: 12,
-                  borderRadius: BorderRadius.circular(2),
+                  width: 14,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(4),
+                  ),
                 ),
                 BarChartRodData(
                   toY: e.value['shift_2'] ?? 0,
                   color: Colors.purple,
-                  width: 12,
-                  borderRadius: BorderRadius.circular(2),
+                  width: 14,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(4),
+                  ),
                 ),
               ],
             );
@@ -221,23 +267,26 @@ class _ReportsScreenState extends State<ReportsScreen> {
               sideTitles: SideTitles(
                 showTitles: true,
                 getTitlesWidget: (value, meta) {
-                  final d = _selectedDate.subtract(
-                    Duration(days: 6 - value.toInt()),
-                  );
+                  final index = value.toInt();
+                  if (index < 0 || index >= 7) return const SizedBox();
+                  final d = _selectedDate.subtract(Duration(days: 6 - index));
                   final weekdays = [
-                    'Mon',
-                    'Tue',
-                    'Wed',
-                    'Thu',
-                    'Fri',
-                    'Sat',
-                    'Sun',
+                    'Sen',
+                    'Sel',
+                    'Rab',
+                    'Kam',
+                    'Jum',
+                    'Sab',
+                    'Min',
                   ];
                   return Padding(
                     padding: const EdgeInsets.only(top: 8.0),
                     child: Text(
                       weekdays[d.weekday - 1],
-                      style: const TextStyle(fontSize: 10),
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   );
                 },
@@ -248,14 +297,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 showTitles: true,
                 reservedSize: 40,
                 getTitlesWidget: (value, meta) {
-                  if (value == 0) return const SizedBox();
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8.0),
-                    child: Text(
-                      _formatCompact(value),
-                      style: const TextStyle(fontSize: 10, color: Colors.grey),
-                      textAlign: TextAlign.right,
-                    ),
+                  return Text(
+                    _formatCompact(value),
+                    style: const TextStyle(fontSize: 9, color: Colors.grey),
                   );
                 },
               ),
@@ -267,13 +311,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
               sideTitles: SideTitles(showTitles: false),
             ),
           ),
-          borderData: FlBorderData(show: false),
           gridData: FlGridData(
             show: true,
             drawVerticalLine: false,
             getDrawingHorizontalLine: (value) =>
-                FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
+                FlLine(color: Colors.grey.withOpacity(0.1), strokeWidth: 1),
           ),
+          borderData: FlBorderData(show: false),
         ),
       ),
     );
@@ -486,6 +530,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
       'weekly_shifts': weeklyShifts,
     };
   }
+}
+
+String _formatFull(double value) {
+  // Formats 1900000.0 into 1.900.000
+  return value
+      .toStringAsFixed(0)
+      .replaceAllMapped(
+        RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+        (Match m) => '${m[1]}.',
+      );
 }
 
 // Helper Widget for custom chart legends
