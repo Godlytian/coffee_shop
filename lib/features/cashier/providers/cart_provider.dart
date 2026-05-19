@@ -750,7 +750,12 @@ class CartProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void assignItemToGroup(CartItem item, String groupId, int qty) {
+  void assignItemToGroup(
+    CartItem item,
+    String groupId,
+    int qty, {
+    String cartLineKey = '',
+  }) {
     if (qty <= 0) return;
     final exists = _items.values.any((line) => line.cartId == item.cartId);
     if (!exists) return;
@@ -758,6 +763,7 @@ class CartProvider extends ChangeNotifier {
       id: _uuid.v4(),
       groupId: groupId,
       orderItemId: item.id,
+      cartLineKey: cartLineKey.isEmpty ? item.id.toString() : cartLineKey,
       assignedQty: qty,
     );
     _groupItems.add(groupItem);
@@ -1232,8 +1238,27 @@ class CartProvider extends ChangeNotifier {
             .eq('id', orderId);
 
         if (hasCartItems) {
-          await supabase.from('order_items').delete().eq('order_id', orderId);
+          // Fetch existing item IDs before inserting new ones so we can safely
+          // delete them only after the insert succeeds. This prevents losing
+          // items if the network drops between delete and insert.
+          final existingQuery = await supabase
+              .from('order_items')
+              .select('id')
+              .eq('order_id', orderId);
+          final existingIds = (existingQuery as List)
+              .whereType<Map<String, dynamic>>()
+              .map((r) => (r['id'] as num?)?.toInt())
+              .whereType<int>()
+              .toList(growable: false);
+
           await supabase.from('order_items').insert(orderItemsPayload);
+
+          if (existingIds.isNotEmpty) {
+            await supabase
+                .from('order_items')
+                .delete()
+                .inFilter('id', existingIds);
+          }
         }
         await _syncCartGroupsToSupabase(supabase: supabase, orderId: orderId);
       } catch (_) {}
@@ -1506,6 +1531,13 @@ class CartProvider extends ChangeNotifier {
   void dispose() {
     _connectivitySubscription?.cancel();
     super.dispose();
+  }
+
+  void clearGroups() {
+    _cartGroups.clear();
+    _groupItems.clear();
+    _persistCartSnapshot();
+    notifyListeners();
   }
 
   void clearCart() {

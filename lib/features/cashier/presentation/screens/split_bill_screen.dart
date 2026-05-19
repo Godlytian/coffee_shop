@@ -1,3 +1,4 @@
+import 'package:coffee_shop/core/utils/formatters.dart';
 import 'package:coffee_shop/features/cashier/models/models.dart';
 import 'package:coffee_shop/features/cashier/providers/cart_provider.dart';
 import 'package:flutter/material.dart';
@@ -16,40 +17,137 @@ class SplitGroupPaymentResult {
 }
 
 class SplitBillScreen extends StatefulWidget {
-  const SplitBillScreen({super.key, this.onRequestPayment, this.onGroupPaid});
+  const SplitBillScreen({
+    super.key,
+    this.onRequestPayment,
+    this.onGroupPaid,
+    this.onConfirmSplit,
+  });
 
-  final Future<SplitGroupPaymentResult?> Function(double total)?
-  onRequestPayment;
+  final Future<SplitGroupPaymentResult?> Function(double total)? onRequestPayment;
   final Future<void> Function()? onGroupPaid;
+
+  /// When provided, a "Pisah Nota" button is shown in the app bar. Calling it
+  /// will invoke this callback (which creates separate orders from the current
+  /// groups). Return true to auto-pop the screen on success.
+  final Future<bool> Function()? onConfirmSplit;
 
   @override
   State<SplitBillScreen> createState() => _SplitBillScreenState();
 }
 
 class _SplitBillScreenState extends State<SplitBillScreen> {
-  int? _selectedItemId;
+  /// The cart map key of the currently selected item (unique per modifier variant).
+  String? _selectedCartKey;
   int _qtyToAssign = 1;
+  bool _isConfirming = false;
 
-  int _getUnassignedQty(CartItem item, List<GroupItem> allGroupItems) {
+  double _unitPrice(CartItem item) {
+    final modifiersData = item.modifiersData;
+    if (modifiersData == null) return item.price;
+    final extra = modifiersData
+        .whereType<Map<String, dynamic>>()
+        .fold<double>(0.0, (sum, modifier) {
+      final selected =
+          modifier['selected_options'] as List<dynamic>? ?? const <dynamic>[];
+      return sum +
+          selected.whereType<Map<String, dynamic>>().fold<double>(
+            0.0,
+            (s, opt) => s + ((opt['price'] as num?)?.toDouble() ?? 0.0),
+          );
+    });
+    return item.price + extra;
+  }
+
+  List<String> _modifierNames(CartItem item) {
+    final data = item.modifiersData;
+    if (data == null) return const [];
+    return data
+        .whereType<Map<String, dynamic>>()
+        .expand((modifier) {
+          final selected =
+              modifier['selected_options'] as List<dynamic>? ?? const [];
+          return selected
+              .whereType<Map<String, dynamic>>()
+              .map((opt) => opt['name']?.toString() ?? '')
+              .where((name) => name.isNotEmpty);
+        })
+        .toList(growable: false);
+  }
+
+  int _getUnassignedQty(
+    String cartLineKey,
+    int totalQty,
+    List<GroupItem> allGroupItems,
+  ) {
     final assigned = allGroupItems
-        .where((g) => g.orderItemId == item.id)
+        .where((g) => g.cartLineKey == cartLineKey)
         .fold(0, (sum, g) => sum + g.assignedQty);
-    return item.quantity - assigned;
+    return totalQty - assigned;
+  }
+
+  Future<void> _handleConfirmSplit() async {
+    final cart = context.read<CartProvider>();
+    final groups = cart.cartGroups;
+    final groupItems = cart.groupItems;
+
+    final hasAssignments =
+        groups.isNotEmpty &&
+        groupItems.any((gi) => gi.assignedQty > 0);
+
+    if (!hasAssignments) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Tetapkan item ke grup terlebih dahulu.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isConfirming = true);
+    try {
+      final success = await widget.onConfirmSplit!();
+      if (success && mounted) {
+        Navigator.of(context).pop();
+      }
+    } finally {
+      if (mounted) setState(() => _isConfirming = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final cart = context.watch<CartProvider>();
-    final items = cart.items.values.toList(growable: false);
+    final entries = cart.items.entries.toList(growable: false);
+    final isPisahMode = widget.onConfirmSplit != null;
 
     return Scaffold(
       backgroundColor: const Color.fromARGB(255, 255, 255, 255),
       appBar: AppBar(
-        title: const Text('Split Bill'),
+        title: Text(isPisahMode ? 'Pisah Nota' : 'Split Bill'),
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.white,
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: isPisahMode,
         shape: Border(bottom: BorderSide(color: Colors.grey.shade300)),
+        actions: [
+          if (isPisahMode)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: FilledButton(
+                onPressed: _isConfirming ? null : _handleConfirmSplit,
+                child: _isConfirming
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text('Pisah Nota'),
+              ),
+            ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(12),
@@ -62,35 +160,49 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Unassigned Items',
-                        style: TextStyle(fontWeight: FontWeight.w700),
+                      Text(
+                        isPisahMode ? 'Item Pesanan' : 'Unassigned Items',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
-                      const Text(
-                        'Select an item, adjust quantity, then tap a group to assign.',
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      Text(
+                        isPisahMode
+                            ? 'Pilih item, atur jumlah, lalu ketuk grup tujuan.'
+                            : 'Select an item, adjust quantity, then tap a group to assign.',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
                       ),
                       const SizedBox(height: 8),
                       Expanded(
                         child: ListView.builder(
-                          itemCount: items.length,
+                          itemCount: entries.length,
                           itemBuilder: (_, index) {
-                            final item = items[index];
+                            final entry = entries[index];
+                            final cartKey = entry.key;
+                            final item = entry.value;
                             final unassignedQty = _getUnassignedQty(
-                              item,
+                              cartKey,
+                              item.quantity,
                               cart.groupItems,
                             );
-                            final isSelected = _selectedItemId == item.id;
+                            final isSelected = _selectedCartKey == cartKey;
 
-                            // Hide item if all quantities have been assigned to groups
                             if (unassignedQty <= 0 && !isSelected) {
                               return const SizedBox.shrink();
                             }
 
+                            final unitPrice = _unitPrice(item);
+                            final priceLabel =
+                                CurrencyFormatters.formatRupiah(unitPrice);
+                            final modNames = _modifierNames(item);
+
                             return ListTile(
                               title: Text(item.name),
                               subtitle: Text(
-                                'Unassigned: $unassignedQty / ${item.quantity}',
+                                '$priceLabel  •  Belum ditugaskan: $unassignedQty / ${item.quantity}'
+                                '${modNames.isNotEmpty ? '\n${modNames.join(', ')}' : ''}',
+                                maxLines: 2,
                               ),
                               selected: isSelected,
                               selectedTileColor: Colors.blue.shade50,
@@ -100,12 +212,11 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                               onTap: () {
                                 setState(() {
                                   if (isSelected) {
-                                    _selectedItemId = null; // Unselect
+                                    _selectedCartKey = null;
                                   } else {
                                     if (unassignedQty > 0) {
-                                      _selectedItemId = item.id;
-                                      _qtyToAssign =
-                                          1; // Default to assigning 1
+                                      _selectedCartKey = cartKey;
+                                      _qtyToAssign = 1;
                                     }
                                   }
                                 });
@@ -135,8 +246,7 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                                           icon: const Icon(
                                             Icons.add_circle_outline,
                                           ),
-                                          onPressed:
-                                              _qtyToAssign < unassignedQty
+                                          onPressed: _qtyToAssign < unassignedQty
                                               ? () => setState(
                                                   () => _qtyToAssign++,
                                                 )
@@ -164,19 +274,19 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                     children: [
                       Row(
                         children: [
-                          const Text(
-                            'Groups',
-                            style: TextStyle(fontWeight: FontWeight.w700),
+                          Text(
+                            isPisahMode ? 'Grup Pisah' : 'Groups',
+                            style: const TextStyle(fontWeight: FontWeight.w700),
                           ),
                           const Spacer(),
                           OutlinedButton.icon(
                             onPressed: () {
                               cart.createGroup(
-                                'Group ${cart.cartGroups.length + 1}',
+                                'Grup ${cart.cartGroups.length + 1}',
                               );
                             },
                             icon: const Icon(Icons.add),
-                            label: const Text('Add Group'),
+                            label: Text(isPisahMode ? 'Tambah Grup' : 'Add Group'),
                           ),
                         ],
                       ),
@@ -191,11 +301,10 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                                 .toList(growable: false);
                             final subtotal = _sumGroupSubtotal(
                               groupLines,
-                              items,
+                              entries,
                             );
 
-                            // Visual feedback that a group can receive the currently selected item
-                            final isItemPending = _selectedItemId != null;
+                            final isItemPending = _selectedCartKey != null;
 
                             return Card(
                               color: isItemPending
@@ -214,25 +323,27 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                                 children: [
                                   ListTile(
                                     onTap: () {
-                                      // Assign the selected item to this group on tap
-                                      if (_selectedItemId != null) {
-                                        final item = items.firstWhere(
-                                          (i) => i.id == _selectedItemId,
+                                      if (_selectedCartKey != null) {
+                                        final entry = entries.firstWhere(
+                                          (e) => e.key == _selectedCartKey,
                                         );
                                         cart.assignItemToGroup(
-                                          item,
+                                          entry.value,
                                           group.id,
                                           _qtyToAssign,
+                                          cartLineKey: _selectedCartKey!,
                                         );
                                         setState(() {
-                                          _selectedItemId = null;
+                                          _selectedCartKey = null;
                                           _qtyToAssign = 1;
                                         });
                                       }
                                     },
                                     title: Text(group.groupName),
                                     subtitle: Text(
-                                      '${group.paymentStatus.toUpperCase()} • ${groupLines.length} item(s)',
+                                      isPisahMode
+                                          ? '${groupLines.length} item(s)'
+                                          : '${group.paymentStatus.toUpperCase()} • ${groupLines.length} item(s)',
                                     ),
                                     trailing: Wrap(
                                       spacing: 8,
@@ -240,12 +351,13 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                                           WrapCrossAlignment.center,
                                       children: [
                                         Text(
-                                          'Rp ${subtotal.toStringAsFixed(0)}',
+                                          CurrencyFormatters.formatRupiah(subtotal),
                                           style: const TextStyle(
                                             fontWeight: FontWeight.bold,
                                           ),
                                         ),
-                                        if (group.paymentStatus != 'paid')
+                                        if (!isPisahMode &&
+                                            group.paymentStatus != 'paid')
                                           FilledButton(
                                             onPressed: () async {
                                               final requestPayment =
@@ -271,38 +383,67 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
                                                 await onGroupPaid();
                                               }
                                             },
-                                            child: const Text('Pay'),
+                                            child: const Text('Bayar'),
+                                          ),
+                                        if (!isPisahMode)
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                              color: Colors.red,
+                                            ),
+                                            tooltip: 'Hapus grup',
+                                            onPressed: () =>
+                                                cart.removeGroup(group.id),
+                                          ),
+                                        if (isPisahMode)
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                              color: Colors.red,
+                                            ),
+                                            tooltip: 'Hapus grup',
+                                            onPressed: () =>
+                                                cart.removeGroup(group.id),
                                           ),
                                       ],
                                     ),
                                   ),
-                                  // Expand the contents of the group below the header
                                   if (groupLines.isNotEmpty)
                                     const Divider(height: 1),
                                   ...groupLines.map((line) {
                                     CartItem? assignedItem;
                                     try {
-                                      assignedItem = items.firstWhere(
-                                        (i) => i.id == line.orderItemId,
-                                      );
+                                      assignedItem = entries
+                                          .firstWhere(
+                                            (e) => line.cartLineKey.isNotEmpty
+                                                ? e.key == line.cartLineKey
+                                                : e.value.id == line.orderItemId,
+                                          )
+                                          .value;
                                     } catch (_) {}
 
-                                    if (assignedItem == null)
+                                    if (assignedItem == null) {
                                       return const SizedBox.shrink();
+                                    }
 
                                     return ListTile(
                                       dense: true,
                                       title: Text(
                                         '${assignedItem.name} (Qty: ${line.assignedQty})',
                                       ),
+                                      subtitle: Text(
+                                        CurrencyFormatters.formatRupiah(
+                                          _unitPrice(assignedItem) * line.assignedQty,
+                                        ),
+                                      ),
                                       trailing: group.paymentStatus == 'paid'
-                                          ? null // Hide remove button if group is already paid
+                                          ? null
                                           : IconButton(
                                               icon: const Icon(
                                                 Icons.remove_circle,
                                                 color: Colors.red,
                                               ),
-                                              tooltip: 'Remove from group',
+                                              tooltip: 'Hapus dari grup',
                                               onPressed: () =>
                                                   cart.removeGroupItem(line.id),
                                             ),
@@ -325,18 +466,24 @@ class _SplitBillScreenState extends State<SplitBillScreen> {
     );
   }
 
-  double _sumGroupSubtotal(List<GroupItem> lines, List<CartItem> cartItems) {
+  double _sumGroupSubtotal(
+    List<GroupItem> lines,
+    List<MapEntry<String, CartItem>> entries,
+  ) {
     var total = 0.0;
     for (final line in lines) {
       CartItem? item;
-      for (final cartItem in cartItems) {
-        if (cartItem.id == line.orderItemId) {
-          item = cartItem;
-          break;
-        }
-      }
+      try {
+        item = entries
+            .firstWhere(
+              (e) => line.cartLineKey.isNotEmpty
+                  ? e.key == line.cartLineKey
+                  : e.value.id == line.orderItemId,
+            )
+            .value;
+      } catch (_) {}
       if (item == null) continue;
-      total += item.price * line.assignedQty;
+      total += _unitPrice(item) * line.assignedQty;
     }
     return total;
   }

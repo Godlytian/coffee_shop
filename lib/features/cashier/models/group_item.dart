@@ -2,12 +2,14 @@ class GroupItem {
   final String id;
   final String groupId;
   final int orderItemId;
+  final String cartLineKey;
   final int assignedQty;
 
   const GroupItem({
     required this.id,
     required this.groupId,
     required this.orderItemId,
+    required this.cartLineKey,
     required this.assignedQty,
   });
 
@@ -16,6 +18,7 @@ class GroupItem {
       id: json['id']?.toString() ?? '',
       groupId: json['group_id']?.toString() ?? '',
       orderItemId: (json['order_item_id'] as num?)?.toInt() ?? 0,
+      cartLineKey: json['cart_line_key']?.toString() ?? '',
       assignedQty: (json['assigned_qty'] as num?)?.toInt() ?? 0,
     );
   }
@@ -28,6 +31,7 @@ class GroupItem {
       'id': id,
       'group_id': groupId,
       'order_item_id': orderItemId,
+      'cart_line_key': cartLineKey,
       'assigned_qty': assignedQty,
     };
   }

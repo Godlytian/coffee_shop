@@ -95,58 +95,6 @@ extension CashierControllerMethods on _ProductListScreenState {
     });
   }
 
-  double _localRowSubtotal(Map<String, dynamic> row) {
-    final qty = (row['quantity'] as num?)?.toDouble() ?? 0;
-    final product = row['products'] as Map<String, dynamic>?;
-    final base = (product?['price'] as num?)?.toDouble() ?? 0;
-    final extra = _localModifierExtra(row['modifiers']);
-    return (base + extra) * qty;
-  }
-
-  Future<void> _upsertLocalOrderTotal(
-    int orderId, {
-    required String status,
-    String? notes,
-  }) async {
-    final orders = await LocalOrderStoreRepository.instance.fetchAllOrders();
-    final existing = orders.firstWhere(
-      (order) => ((order['id'] as num?)?.toInt() ?? -1) == orderId,
-      orElse: () => <String, dynamic>{'id': orderId},
-    );
-    final rows = await LocalOrderItemStoreRepository.instance.fetchByOrderId(
-      orderId,
-    );
-    final total = rows.fold<double>(
-      0,
-      (sum, row) => sum + _localRowSubtotal(row),
-    );
-    await LocalOrderStoreRepository.instance.upsertOrder({
-      ...Map<String, dynamic>.from(existing),
-      'id': orderId,
-      'status': status,
-      'total_price': total,
-      'subtotal': total,
-      'discount_total': 0,
-      'notes': notes ?? existing['notes'],
-      'created_at':
-          existing['created_at'] ?? DateTime.now().toUtc().toIso8601String(),
-      'order_source': existing['order_source'] ?? 'cashier',
-    });
-  }
-
-  void _restoreCartItemsFromMap(Map<String, CartItem> entries) {
-    final cart = context.read<CartProvider>();
-    cart.clearCart();
-    for (final item in entries.values) {
-      cart.addItem(
-        item,
-        quantity: item.quantity,
-        modifiers: item.modifiers,
-        modifiersData: item.modifiersData,
-      );
-    }
-  }
-
   String _modifierSignature(dynamic rawModifiers) {
     final normalized = _normalizeRawModifiers(rawModifiers);
     final canonical = _canonicalizeJsonValue(normalized);
@@ -172,10 +120,13 @@ extension CashierControllerMethods on _ProductListScreenState {
 
   String _selectedCartItemSignature(CartItem item) {
     final rawModifiers = item.modifiersData ?? item.modifiers?.toJson();
+    // Use line price (base + modifier extras) to match what updateExistingOrder
+    // stores as price_at_time, which _orderItemRowSignature also reads.
+    final linePrice = item.price + _localModifierExtra(rawModifiers);
     return [
       item.id,
       item.quantity,
-      item.price.toStringAsFixed(6),
+      linePrice.toStringAsFixed(6),
       _modifierSignature(rawModifiers),
     ].join('|');
   }
@@ -217,23 +168,6 @@ extension CashierControllerMethods on _ProductListScreenState {
         );
       }
     } catch (_) {}
-  }
-
-  Future<int> _generateOfflineDailyUniqueOrderId() async {
-    final localOrders = await LocalOrderStoreRepository.instance
-        .fetchAllOrders();
-    final localNegativeIds = localOrders
-        .map((row) => (row['id'] as num?)?.toInt())
-        .whereType<int>()
-        .where((id) => id < 0)
-        .toList(growable: false);
-    if (localNegativeIds.isEmpty) {
-      return -1;
-    }
-    final smallest = localNegativeIds.reduce(
-      (value, element) => value < element ? value : element,
-    );
-    return smallest - 1;
   }
 
   Future<int> _generateDailyUniqueOrderId() async {
@@ -306,9 +240,17 @@ extension CashierControllerMethods on _ProductListScreenState {
   }
 
   Future<void> _handleMergeBill() async {
-    final selectedEntries = _selectedCartEntries();
-    if (selectedEntries.isEmpty) {
-      _showDropdownSnackbar('Pilih item yang ingin digabung dulu.');
+    if (_isOfflineMode) {
+      _showDropdownSnackbar(
+        'Gabung nota tidak tersedia saat offline.',
+        isError: true,
+      );
+      return;
+    }
+
+    final cart = context.read<CartProvider>();
+    if (cart.items.isEmpty && _currentActiveOrderId == null) {
+      _showDropdownSnackbar('Cart kosong. Tidak ada item untuk digabung.');
       return;
     }
 
@@ -331,65 +273,15 @@ extension CashierControllerMethods on _ProductListScreenState {
       return;
     }
 
+    // Ask whether to merge everything or let the user pick specific items.
+    final mergeChoice = await _showMergeOptionsDialog();
+    if (!mounted || mergeChoice == null) return;
+
     try {
-      if (_currentActiveOrderId != null) {
-        final cart = context.read<CartProvider>();
-        await cart.updateExistingOrder(
-          orderId: _currentActiveOrderId!,
-          customerName: _customerName,
-          tableName: _tableName,
-          orderType: _orderType,
-        );
-
-        final rows = await _fetchOrderItemRows(_currentActiveOrderId!);
-        final selectedIds = await _matchSelectedOrderItemIds(
-          rows: rows,
-          selectedItems: selectedEntries.values,
-        );
-
-        if (selectedIds.isEmpty) {
-          throw Exception(
-            'Tidak menemukan item order yang dipilih untuk digabung.',
-          );
-        }
-
-        await supabase
-            .from('order_items')
-            .update({'order_id': targetOrderId})
-            .inFilter('id', selectedIds);
-
-        await _recalculateAndPersistOrderTotals(_currentActiveOrderId!);
-        await _recalculateAndPersistOrderTotals(targetOrderId);
-
-        final sourceCancelled = await _cancelSourceIfNoRemainingItems(
-          _currentActiveOrderId!,
-          extraNote: 'Merged into Order #$targetOrderId',
-        );
-        if (sourceCancelled) {
-          _resetCurrentOrderDraft(showMessage: false);
-        } else {
-          final refreshed = await supabase
-              .from('orders')
-              .select('id, customer_name, type, notes')
-              .eq('id', _currentActiveOrderId!)
-              .single();
-          if (!mounted) return;
-          await _switchToActiveOrder(refreshed);
-        }
+      if (mergeChoice == 'all') {
+        await _mergeAllToOrder(targetOrderId);
       } else {
-        await _insertCartEntriesToOrder(
-          orderId: targetOrderId,
-          items: selectedEntries.values,
-        );
-        await _recalculateAndPersistOrderTotals(targetOrderId);
-        final cart = context.read<CartProvider>();
-        for (final key in selectedEntries.keys) {
-          cart.removeItem(key);
-        }
-        setState(() {
-          _selectedCartItems.removeAll(selectedEntries.keys);
-          _isCartSelectionMode = _selectedCartItems.isNotEmpty;
-        });
+        await _mergeSelectedToOrder(targetOrderId);
       }
     } catch (error) {
       if (!mounted) return;
@@ -398,7 +290,334 @@ extension CashierControllerMethods on _ProductListScreenState {
     }
 
     if (!mounted) return;
-    _showDropdownSnackbar('Item berhasil digabung ke Order #$targetOrderId');
+    _showDropdownSnackbar('Berhasil digabung ke Order #$targetOrderId');
+  }
+
+  Future<String?> _showMergeOptionsDialog() {
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Gabung Nota'),
+        content: const Text(
+          'Pilih cara penggabungan:',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Batal'),
+          ),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(dialogContext, 'select'),
+            child: const Text('Pindah Beberapa Item'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, 'all'),
+            child: const Text('Gabung Semua'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Moves ALL items from the current order/cart into [targetOrderId] and
+  /// cancels the source order.
+  Future<void> _mergeAllToOrder(int targetOrderId) async {
+    final cart = context.read<CartProvider>();
+
+    if (_currentActiveOrderId != null) {
+      await cart.updateExistingOrder(
+        orderId: _currentActiveOrderId!,
+        customerName: _customerName,
+        tableName: _tableName,
+        orderType: _orderType,
+      );
+
+      final sourceRows = await _fetchOrderItemRows(_currentActiveOrderId!);
+      await _mergeRowsIntoOrder(sourceRows, targetOrderId);
+      await _recalculateAndPersistOrderTotals(targetOrderId);
+
+      // Source is now empty — cancel it.
+      await supabase
+          .from('orders')
+          .update({
+            'status': OrderStatus.cancelled,
+            'notes': _buildOrderNotes(
+              tableName: _tableName,
+              extraNote: 'Merged into Order #$targetOrderId',
+            ),
+          })
+          .eq('id', _currentActiveOrderId!);
+
+      _resetCurrentOrderDraft(showMessage: false);
+    } else {
+      // Draft mode — upsert cart items into target, merging qtys where possible.
+      await _upsertCartItemsIntoOrder(
+        targetOrderId: targetOrderId,
+        items: cart.items.values,
+      );
+      await _recalculateAndPersistOrderTotals(targetOrderId);
+      cart.clearCart();
+    }
+  }
+
+  /// Moves [sourceRows] into [targetOrderId] with smart merging:
+  /// – rows whose product+modifier key already exists in target → qty is added
+  ///   to the existing target row and the source row is deleted.
+  /// – rows with no match → order_id is updated to target.
+  Future<void> _mergeRowsIntoOrder(
+    List<Map<String, dynamic>> sourceRows,
+    int targetOrderId,
+  ) async {
+    final targetRows = await _fetchOrderItemRows(targetOrderId);
+
+    final targetByKey = <String, Map<String, dynamic>>{};
+    for (final row in targetRows) {
+      final productId = (row['product_id'] as num?)?.toInt() ?? 0;
+      final key = '$productId::${_modifierSignature(row['modifiers'])}';
+      targetByKey[key] = row;
+    }
+
+    for (final sourceRow in sourceRows) {
+      final sourceRowId = (sourceRow['id'] as num?)?.toInt();
+      if (sourceRowId == null) continue;
+      final sourceQty = (sourceRow['quantity'] as num?)?.toInt() ?? 0;
+      final productId = (sourceRow['product_id'] as num?)?.toInt() ?? 0;
+      final key = '$productId::${_modifierSignature(sourceRow['modifiers'])}';
+
+      final existingTarget = targetByKey[key];
+      if (existingTarget != null) {
+        final targetRowId = (existingTarget['id'] as num?)?.toInt();
+        if (targetRowId != null) {
+          final newQty =
+              ((existingTarget['quantity'] as num?)?.toInt() ?? 0) + sourceQty;
+          await supabase
+              .from('order_items')
+              .update({'quantity': newQty})
+              .eq('id', targetRowId);
+          targetByKey[key] = {...existingTarget, 'quantity': newQty};
+        }
+        await supabase.from('order_items').delete().eq('id', sourceRowId);
+      } else {
+        await supabase
+            .from('order_items')
+            .update({'order_id': targetOrderId})
+            .eq('id', sourceRowId);
+        targetByKey[key] = {...sourceRow, 'order_id': targetOrderId};
+      }
+    }
+  }
+
+  /// Inserts [items] into [targetOrderId], merging quantities for items that
+  /// already exist in the target (same product + modifiers), creating a new
+  /// line when modifiers differ.
+  Future<void> _upsertCartItemsIntoOrder({
+    required int targetOrderId,
+    required Iterable<CartItem> items,
+  }) async {
+    final targetRows = await _fetchOrderItemRows(targetOrderId);
+
+    final targetByKey = <String, Map<String, dynamic>>{};
+    for (final row in targetRows) {
+      final productId = (row['product_id'] as num?)?.toInt() ?? 0;
+      final key = '$productId::${_modifierSignature(row['modifiers'])}';
+      targetByKey[key] = row;
+    }
+
+    final toInsert = <Map<String, dynamic>>[];
+    for (final item in items) {
+      final rawModifiers = item.modifiersData ?? item.modifiers?.toJson();
+      final key = '${item.id}::${_modifierSignature(rawModifiers)}';
+      final linePrice = item.price + _localModifierExtra(rawModifiers);
+
+      final existing = targetByKey[key];
+      if (existing != null) {
+        final targetRowId = (existing['id'] as num?)?.toInt();
+        if (targetRowId != null) {
+          final newQty =
+              ((existing['quantity'] as num?)?.toInt() ?? 0) + item.quantity;
+          await supabase
+              .from('order_items')
+              .update({'quantity': newQty})
+              .eq('id', targetRowId);
+          targetByKey[key] = {...existing, 'quantity': newQty};
+        }
+      } else {
+        toInsert.add({
+          'order_id': targetOrderId,
+          'product_id': item.id,
+          'quantity': item.quantity,
+          'price_at_time': linePrice,
+          'modifiers': rawModifiers,
+        });
+        targetByKey[key] = {
+          'product_id': item.id,
+          'quantity': item.quantity,
+          'price_at_time': linePrice,
+          'modifiers': rawModifiers,
+        };
+      }
+    }
+
+    if (toInsert.isNotEmpty) {
+      await supabase.from('order_items').insert(toInsert);
+    }
+  }
+
+  /// Shows an item-selection dialog so the user can pick which items to move
+  /// into [targetOrderId]. Leaves the rest in the source order.
+  Future<void> _mergeSelectedToOrder(int targetOrderId) async {
+    final cart = context.read<CartProvider>();
+    final allItems = cart.items.values.toList(growable: false);
+    if (allItems.isEmpty) return;
+
+    final selectedCartIds = await _showMergeItemSelectionDialog(allItems);
+    if (!mounted || selectedCartIds == null || selectedCartIds.isEmpty) return;
+
+    final selectedItems = allItems
+        .where((item) => selectedCartIds.contains(item.cartId))
+        .toList(growable: false);
+
+    if (_currentActiveOrderId != null) {
+      await cart.updateExistingOrder(
+        orderId: _currentActiveOrderId!,
+        customerName: _customerName,
+        tableName: _tableName,
+        orderType: _orderType,
+      );
+
+      final rows = await _fetchOrderItemRows(_currentActiveOrderId!);
+      final selectedIds = await _matchSelectedOrderItemIds(
+        rows: rows,
+        selectedItems: selectedItems,
+      );
+
+      if (selectedIds.isEmpty) {
+        throw Exception('Tidak menemukan item yang dipilih di database.');
+      }
+
+      final selectedRows = rows
+          .where((r) => selectedIds.contains((r['id'] as num?)?.toInt()))
+          .toList(growable: false);
+      await _mergeRowsIntoOrder(selectedRows, targetOrderId);
+
+      await _recalculateAndPersistOrderTotals(_currentActiveOrderId!);
+      await _recalculateAndPersistOrderTotals(targetOrderId);
+
+      final sourceCancelled = await _cancelSourceIfNoRemainingItems(
+        _currentActiveOrderId!,
+        extraNote: 'Partially merged into Order #$targetOrderId',
+      );
+      if (sourceCancelled) {
+        _resetCurrentOrderDraft(showMessage: false);
+      } else {
+        // Reload the current order's cart directly — _switchToActiveOrder would
+        // short-circuit because the source order is already the active order.
+        await _reloadCurrentOrderCart();
+      }
+    } else {
+      // Draft mode — upsert selected items into target, merging qtys where possible.
+      await _upsertCartItemsIntoOrder(
+        targetOrderId: targetOrderId,
+        items: selectedItems,
+      );
+      await _recalculateAndPersistOrderTotals(targetOrderId);
+      for (final item in selectedItems) {
+        final key = cart.items.entries
+            .firstWhere((e) => e.value.cartId == item.cartId)
+            .key;
+        cart.removeItem(key);
+      }
+    }
+  }
+
+  /// Reloads the cart from Supabase for the current active order.
+  /// Unlike [_switchToActiveOrder], this does not check for "already active"
+  /// and is used after operations that mutate the current order's items in DB.
+  Future<void> _reloadCurrentOrderCart() async {
+    if (_currentActiveOrderId == null || !mounted) return;
+    final cart = context.read<CartProvider>();
+    final items = await _fetchOrderItems(_currentActiveOrderId!);
+    if (!mounted) return;
+    cart.clearCart();
+    for (final item in items) {
+      cart.addItem(
+        item.product,
+        quantity: item.quantity,
+        modifiers: item.modifiers,
+        modifiersData: item.modifiersData,
+      );
+    }
+  }
+
+  Future<Set<String>?> _showMergeItemSelectionDialog(
+    List<CartItem> items,
+  ) async {
+    final selected = <String>{};
+
+    return showDialog<Set<String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (_, setDialogState) => AlertDialog(
+          title: const Text('Pilih item yang ingin dipindah'),
+          content: SizedBox(
+            width: 400,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: items.length,
+              itemBuilder: (_, index) {
+                final item = items[index];
+                final isSelected = selected.contains(item.cartId);
+                final linePrice =
+                    item.price + _modifierExtraFromData(item.modifiersData);
+                final modNames = (item.modifiersData ?? const <dynamic>[])
+                    .whereType<Map<String, dynamic>>()
+                    .expand((mod) {
+                      final opts =
+                          mod['selected_options'] as List<dynamic>? ??
+                          const [];
+                      return opts
+                          .whereType<Map<String, dynamic>>()
+                          .map((o) => o['name']?.toString() ?? '')
+                          .where((n) => n.isNotEmpty);
+                    })
+                    .join(', ');
+                return CheckboxListTile(
+                  title: Text(item.name),
+                  subtitle: Text(
+                    'Qty: ${item.quantity} • ${_formatRupiah(linePrice)}'
+                    '${modNames.isNotEmpty ? '\n$modNames' : ''}',
+                    maxLines: 2,
+                  ),
+                  value: isSelected,
+                  onChanged: (checked) => setDialogState(() {
+                    if (checked == true) {
+                      selected.add(item.cartId);
+                    } else {
+                      selected.remove(item.cartId);
+                    }
+                  }),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: selected.isEmpty
+                  ? null
+                  : () => Navigator.pop(
+                      dialogContext,
+                      Set<String>.from(selected),
+                    ),
+              child: const Text('Pindah'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _handleSplitBill() async {
@@ -409,16 +628,56 @@ extension CashierControllerMethods on _ProductListScreenState {
       return;
     }
 
-    final selectedEntries = _selectedCartEntries();
-    if (selectedEntries.isEmpty) {
-      _showDropdownSnackbar('Pilih item yang ingin dipisah dulu.');
+    if (_isOfflineMode) {
+      _showDropdownSnackbar(
+        'Pisah nota tidak tersedia saat offline.',
+        isError: true,
+      );
       return;
     }
 
-    final sourceOrderId = _currentActiveOrderId!;
+    // Clear any leftover groups before opening the split screen so the user
+    // starts fresh each time.
+    if (!mounted) return;
+    context.read<CartProvider>().clearGroups();
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SplitBillScreen(
+          onConfirmSplit: _processSplitFromGroups,
+        ),
+      ),
+    );
+  }
+
+  /// Called by SplitBillScreen when the user confirms the group-based split.
+  /// Creates one new active order per group and moves the assigned items into
+  /// those new orders. Unassigned items stay in the source order.
+  Future<bool> _processSplitFromGroups() async {
+    final sourceOrderId = _currentActiveOrderId;
+    if (sourceOrderId == null) {
+      _showDropdownSnackbar('Tidak ada order aktif.', isError: true);
+      return false;
+    }
+
+    final cart = context.read<CartProvider>();
+    final groups = List<CartGroup>.from(cart.cartGroups);
+    final groupItems = List<GroupItem>.from(cart.groupItems);
+
+    final activeGroups = groups
+        .where((g) => groupItems.any((gi) => gi.groupId == g.id && gi.assignedQty > 0))
+        .toList(growable: false);
+
+    if (activeGroups.isEmpty) {
+      _showDropdownSnackbar(
+        'Tetapkan item ke grup terlebih dahulu.',
+        isError: true,
+      );
+      return false;
+    }
 
     try {
-      final cart = context.read<CartProvider>();
+      // Persist cart to source order before touching DB rows.
       await cart.updateExistingOrder(
         orderId: sourceOrderId,
         customerName: _customerName,
@@ -426,183 +685,111 @@ extension CashierControllerMethods on _ProductListScreenState {
         orderType: _orderType,
       );
 
-      if (_isOfflineMode) {
-        final sourceRows = await LocalOrderItemStoreRepository.instance
-            .fetchByOrderId(sourceOrderId);
-        if (sourceRows.isEmpty) {
-          throw Exception('Offline source order items not found.');
-        }
+      final sourceRows = await _fetchOrderItemRows(sourceOrderId);
+      if (sourceRows.isEmpty) {
+        throw Exception('Item pada order sumber tidak ditemukan.');
+      }
 
-        final selectionBuckets = <String, int>{};
-        for (final item in selectedEntries.values) {
-          final key = _selectedCartItemSignature(item);
-          selectionBuckets.update(key, (count) => count + 1, ifAbsent: () => 1);
-        }
+      // remainingQty tracks how many units of each DB row are still in source.
+      final remainingQty = <int, int>{};
+      final rowsByProductId = <int, List<Map<String, dynamic>>>{};
+      for (final row in sourceRows) {
+        final rowId = (row['id'] as num?)?.toInt();
+        final productId = (row['product_id'] as num?)?.toInt();
+        if (rowId == null || productId == null) continue;
+        remainingQty[rowId] = (row['quantity'] as num?)?.toInt() ?? 0;
+        rowsByProductId.putIfAbsent(productId, () => []).add(row);
+      }
 
-        final selectedRows = <Map<String, dynamic>>[];
-        final remainingRows = <Map<String, dynamic>>[];
+      for (final group in activeGroups) {
+        final lines = groupItems
+            .where((gi) => gi.groupId == group.id && gi.assignedQty > 0)
+            .toList(growable: false);
+        if (lines.isEmpty) continue;
 
-        for (final row in sourceRows) {
-          final key = _orderItemRowSignature(row);
-          final remainingCount = selectionBuckets[key] ?? 0;
-          if (remainingCount > 0) {
-            selectedRows.add(Map<String, dynamic>.from(row));
-            selectionBuckets[key] = remainingCount - 1;
-          } else {
-            remainingRows.add(Map<String, dynamic>.from(row));
+        final newOrderId = await _createActiveOrderDraft(
+          orderType: _orderType,
+          customerName: _customerName,
+          tableName: _tableName,
+          parentOrderId: sourceOrderId,
+        );
+
+        for (final gi in lines) {
+          int qtyLeft = gi.assignedQty;
+          final candidateRows = rowsByProductId[gi.orderItemId] ?? [];
+
+          for (final row in candidateRows) {
+            if (qtyLeft <= 0) break;
+            final rowId = (row['id'] as num?)?.toInt();
+            if (rowId == null) continue;
+            final available = remainingQty[rowId] ?? 0;
+            if (available <= 0) continue;
+
+            final take = min(qtyLeft, available);
+            remainingQty[rowId] = available - take;
+            qtyLeft -= take;
+
+            await supabase.from('order_items').insert({
+              'order_id': newOrderId,
+              'product_id': row['product_id'],
+              'quantity': take,
+              'price_at_time': row['price_at_time'],
+              'modifiers': row['modifiers'],
+            });
           }
         }
 
-        final unmatched = selectionBuckets.values.any((count) => count > 0);
-        if (selectedRows.isEmpty || unmatched) {
-          throw Exception(
-            'Tidak menemukan item order yang dipilih untuk dipisah (offline).',
-          );
-        }
-
-        final localOrders = await LocalOrderStoreRepository.instance
-            .fetchAllOrders();
-        final sourceOrder = localOrders.firstWhere(
-          (row) => ((row['id'] as num?)?.toInt() ?? -1) == sourceOrderId,
-          orElse: () => <String, dynamic>{},
-        );
-
-        final targetOrderId = await _generateOfflineDailyUniqueOrderId();
-        final createdAt = DateTime.now().toUtc().toIso8601String();
-        final sourceNotes = sourceOrder['notes']?.toString();
-        final targetOrder = <String, dynamic>{
-          'id': targetOrderId,
-          'status': OrderStatus.active,
-          'type': sourceOrder['type'] ?? _orderType,
-          'order_source': sourceOrder['order_source'] ?? 'cashier',
-          'payment_method': null,
-          'total_price': 0,
-          'subtotal': 0,
-          'discount_total': 0,
-          'points_earned': 0,
-          'points_used': 0,
-          'total_payment_received': null,
-          'change_amount': null,
-          'customer_name': sourceOrder['customer_name'],
-          'parent_order_id': sourceOrderId,
-          'cashier_id': _activeCashierId,
-          'shift_id': _activeShiftId,
-          'notes': sourceNotes,
-          'created_at': createdAt,
-        };
-
-        await LocalOrderStoreRepository.instance.upsertOrder(targetOrder);
-        await LocalOrderItemStoreRepository.instance.replaceForOrder(
-          orderId: targetOrderId,
-          rows: selectedRows
-              .map(
-                (row) =>
-                    Map<String, dynamic>.from(row)
-                      ..['order_id'] = targetOrderId,
-              )
-              .toList(growable: false),
-        );
-        await LocalOrderItemStoreRepository.instance.replaceForOrder(
-          orderId: sourceOrderId,
-          rows: remainingRows
-              .map(
-                (row) =>
-                    Map<String, dynamic>.from(row)
-                      ..['order_id'] = sourceOrderId,
-              )
-              .toList(growable: false),
-        );
-
-        await _upsertLocalOrderTotal(
-          targetOrderId,
-          status: OrderStatus.active,
-          notes: sourceNotes,
-        );
-        await _upsertLocalOrderTotal(
-          sourceOrderId,
-          status: remainingRows.isEmpty
-              ? OrderStatus.cancelled
-              : OrderStatus.active,
-          notes: remainingRows.isEmpty
-              ? _buildOrderNotes(
-                  tableName: _tableName,
-                  extraNote: 'Items split to new offline draft #$targetOrderId',
-                )
-              : sourceNotes,
-        );
-
-        cart.clearCart();
-        for (final item in selectedEntries.values) {
-          cart.addItem(
-            item,
-            quantity: item.quantity,
-            modifiers: item.modifiers,
-            modifiersData: item.modifiersData,
-          );
-        }
-
-        if (!mounted) return;
-        setState(() {
-          _currentActiveOrderId = null;
-          _pendingParentOrderIdForNextSubmit = sourceOrderId;
-          _customerName = null;
-          _tableName = null;
-          _selectedCartItems.clear();
-          _isCartSelectionMode = false;
-        });
-
-        _showDropdownSnackbar(
-          'Item dipisah ke draft baru (offline). Parent order: #$sourceOrderId',
-        );
-        return;
+        await _recalculateAndPersistOrderTotals(newOrderId);
       }
 
-      final rows = await _fetchOrderItemRows(sourceOrderId);
-      final selectedIds = await _matchSelectedOrderItemIds(
-        rows: rows,
-        selectedItems: selectedEntries.values,
-      );
+      // Update the source order: shrink rows that were partially taken,
+      // delete rows that were fully moved out.
+      for (final row in sourceRows) {
+        final rowId = (row['id'] as num?)?.toInt();
+        if (rowId == null) continue;
+        final original = (row['quantity'] as num?)?.toInt() ?? 0;
+        final remaining = remainingQty[rowId] ?? 0;
 
-      if (selectedIds.isEmpty) {
-        throw Exception(
-          'Tidak menemukan item order yang dipilih untuk dipisah.',
-        );
+        if (remaining <= 0) {
+          await supabase.from('order_items').delete().eq('id', rowId);
+        } else if (remaining < original) {
+          await supabase
+              .from('order_items')
+              .update({'quantity': remaining})
+              .eq('id', rowId);
+        }
       }
-
-      await supabase.from('order_items').delete().inFilter('id', selectedIds);
 
       await _recalculateAndPersistOrderTotals(sourceOrderId);
-      await _cancelSourceIfNoRemainingItems(
+
+      final sourceCancelled = await _cancelSourceIfNoRemainingItems(
         sourceOrderId,
-        extraNote: 'Items split to new cashier draft',
+        extraNote: 'Items split to new orders',
       );
 
-      cart.clearCart();
-      for (final item in selectedEntries.values) {
-        cart.addItem(
-          item,
-          quantity: item.quantity,
-          modifiers: item.modifiers,
-          modifiersData: item.modifiersData,
-        );
+      cart.clearGroups();
+
+      if (!mounted) return true;
+
+      if (sourceCancelled) {
+        _resetCurrentOrderDraft(showMessage: false);
+      } else {
+        // Reload the source order's remaining items directly.
+        await _reloadCurrentOrderCart();
       }
 
-      if (!mounted) return;
+      if (!mounted) return true;
       setState(() {
-        _currentActiveOrderId = null;
-        _pendingParentOrderIdForNextSubmit = sourceOrderId;
-        _customerName = null;
-        _tableName = null;
         _selectedCartItems.clear();
         _isCartSelectionMode = false;
       });
 
-      _showDropdownSnackbar(
-        'Item dipisah ke draft baru. Parent order: #$sourceOrderId',
-      );
+      _showDropdownSnackbar('Nota berhasil dipisah.');
+      return true;
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) return false;
       _showDropdownSnackbar('Gagal pisah nota: $error', isError: true);
+      return false;
     }
   }
 
