@@ -45,12 +45,23 @@ extension CashierControllerMethods on _ProductListScreenState {
   }
 
   Future<List<Map<String, dynamic>>> _fetchOrderItemRows(int orderId) async {
-    final rows = await supabase
-        .from('order_items')
-        .select('id, product_id, quantity, price_at_time, modifiers')
-        .eq('order_id', orderId);
-
-    return (rows as List<dynamic>).whereType<Map<String, dynamic>>().toList();
+    try {
+      final rows = await supabase
+          .from('order_items')
+          .select('id, product_id, quantity, price_at_time, modifiers')
+          .eq('order_id', orderId);
+      return (rows as List<dynamic>).whereType<Map<String, dynamic>>().toList();
+    } catch (_) {
+      if (!_isOfflineMode) rethrow;
+      final localRows =
+          await LocalOrderItemStoreRepository.instance.fetchByOrderId(orderId);
+      // Assign synthetic 1-based IDs so offline callers can use id-keyed maps.
+      return localRows.asMap().entries.map((e) {
+        final row = Map<String, dynamic>.from(e.value);
+        row['id'] ??= e.key + 1;
+        return row;
+      }).toList();
+    }
   }
 
   bool get _isOfflineMode {
@@ -95,8 +106,52 @@ extension CashierControllerMethods on _ProductListScreenState {
     });
   }
 
+  double _calculateTotalFromLocalRows(List<Map<String, dynamic>> rows) {
+    var total = 0.0;
+    for (final row in rows) {
+      final qty = (row['quantity'] as num?)?.toDouble() ?? 0;
+      final priceAtTime = (row['price_at_time'] as num?)?.toDouble();
+      final basePrice =
+          (row['products']?['price'] as num?)?.toDouble() ?? 0.0;
+      final price =
+          priceAtTime ?? (basePrice + _localModifierExtra(row['modifiers']));
+      total += qty * price;
+    }
+    return total;
+  }
+
+  // Matches each cart item to a DB row by signature, returning rowId → moveQty.
+  Map<int, int> _matchCartItemsToRowIds(
+    List<CartItem> items,
+    List<Map<String, dynamic>> rows,
+    Map<String, int> moveQtys,
+  ) {
+    final rowBuckets = <String, List<int>>{};
+    for (final row in rows) {
+      final rowId = (row['id'] as num?)?.toInt();
+      if (rowId == null) continue;
+      rowBuckets.putIfAbsent(_orderItemRowSignature(row), () => []).add(rowId);
+    }
+    final result = <int, int>{};
+    for (final item in items) {
+      final moveQty = moveQtys[item.cartId] ?? item.quantity;
+      if (moveQty <= 0) continue;
+      final bucket = rowBuckets[_selectedCartItemSignature(item)];
+      if (bucket == null || bucket.isEmpty) continue;
+      result[bucket.removeAt(0)] = moveQty;
+    }
+    return result;
+  }
+
   String _modifierSignature(dynamic rawModifiers) {
     final normalized = _normalizeRawModifiers(rawModifiers);
+    // Treat null and empty collections identically — the DB stores NULL when
+    // there are no modifiers, but the cart may carry an empty list or map.
+    if (normalized == null ||
+        (normalized is List && normalized.isEmpty) ||
+        (normalized is Map && normalized.isEmpty)) {
+      return 'null';
+    }
     final canonical = _canonicalizeJsonValue(normalized);
     return jsonEncode(canonical);
   }
@@ -132,6 +187,27 @@ extension CashierControllerMethods on _ProductListScreenState {
   }
 
   Future<void> _recalculateAndPersistOrderTotals(int orderId) async {
+    if (_isOfflineMode) {
+      final localRows =
+          await LocalOrderItemStoreRepository.instance.fetchByOrderId(orderId);
+      final total = _calculateTotalFromLocalRows(localRows);
+      final normalizedTotal = _normalizeNum(total);
+      final allOrders =
+          await LocalOrderStoreRepository.instance.fetchAllOrders();
+      final existing = allOrders.firstWhere(
+        (r) => ((r['id'] as num?)?.toInt() ?? -1) == orderId,
+        orElse: () => <String, dynamic>{},
+      );
+      await LocalOrderStoreRepository.instance.upsertOrder({
+        ...existing,
+        'id': orderId,
+        'total_price': normalizedTotal,
+        'subtotal': normalizedTotal,
+        'discount_total': 0,
+      });
+      return;
+    }
+
     final rows = await supabase
         .from('order_items')
         .select('quantity, price_at_time')
@@ -240,14 +316,6 @@ extension CashierControllerMethods on _ProductListScreenState {
   }
 
   Future<void> _handleMergeBill() async {
-    if (_isOfflineMode) {
-      _showDropdownSnackbar(
-        'Gabung nota tidak tersedia saat offline.',
-        isError: true,
-      );
-      return;
-    }
-
     final cart = context.read<CartProvider>();
     if (cart.items.isEmpty && _currentActiveOrderId == null) {
       _showDropdownSnackbar('Cart kosong. Tidak ada item untuk digabung.');
@@ -336,17 +404,49 @@ extension CashierControllerMethods on _ProductListScreenState {
       await _mergeRowsIntoOrder(sourceRows, targetOrderId);
       await _recalculateAndPersistOrderTotals(targetOrderId);
 
-      // Source is now empty — cancel it.
-      await supabase
-          .from('orders')
-          .update({
-            'status': OrderStatus.cancelled,
-            'notes': _buildOrderNotes(
-              tableName: _tableName,
-              extraNote: 'Merged into Order #$targetOrderId',
-            ),
-          })
-          .eq('id', _currentActiveOrderId!);
+      final mergedSourceId = _currentActiveOrderId!;
+      final cancelNotes = _buildOrderNotes(
+        tableName: _tableName,
+        extraNote: 'Merged into Order #$targetOrderId',
+      );
+
+      if (_isOfflineMode) {
+        // Queue target items replace and source cancel for sync.
+        final newTargetRows =
+            await LocalOrderItemStoreRepository.instance.fetchByOrderId(
+              targetOrderId,
+            );
+        final targetTotal = _calculateTotalFromLocalRows(newTargetRows);
+        final normTarget = _normalizeNum(targetTotal);
+        await cart.enqueueOrderItemsReplace(
+          orderId: targetOrderId,
+          items: newTargetRows
+              .map((r) => {
+                    'order_id': targetOrderId,
+                    'product_id': r['product_id'],
+                    'quantity': r['quantity'],
+                    'price_at_time': r['price_at_time'],
+                    'modifiers': r['modifiers'],
+                  })
+              .toList(),
+          orderUpdates: {
+            'total_price': normTarget,
+            'subtotal': normTarget,
+            'discount_total': 0,
+          },
+        );
+        await LocalOrderStoreRepository.instance.deleteOrder(mergedSourceId);
+        await cart.enqueueOrderCancel(
+          orderId: mergedSourceId,
+          notes: cancelNotes,
+        );
+      } else {
+        await supabase
+            .from('orders')
+            .update({'status': OrderStatus.cancelled, 'notes': cancelNotes})
+            .eq('id', mergedSourceId);
+        await LocalOrderStoreRepository.instance.deleteOrder(mergedSourceId);
+      }
 
       _resetCurrentOrderDraft(showMessage: false);
     } else {
@@ -360,14 +460,19 @@ extension CashierControllerMethods on _ProductListScreenState {
     }
   }
 
-  /// Moves [sourceRows] into [targetOrderId] with smart merging:
-  /// – rows whose product+modifier key already exists in target → qty is added
-  ///   to the existing target row and the source row is deleted.
-  /// – rows with no match → order_id is updated to target.
+  /// Moves [sourceRows] into [targetOrderId].
+  ///
+  /// [moveQtys] maps rowId → qty to move. When null every row is fully moved.
+  /// For partial moves the source row qty is reduced in-place; for full moves
+  /// the source row is deleted (online) or omitted from local cache (offline).
+  ///
+  /// Offline: updates the target's local item cache. Source row changes are
+  /// the caller's responsibility.
   Future<void> _mergeRowsIntoOrder(
     List<Map<String, dynamic>> sourceRows,
-    int targetOrderId,
-  ) async {
+    int targetOrderId, {
+    Map<int, int>? moveQtys,
+  }) async {
     final targetRows = await _fetchOrderItemRows(targetOrderId);
 
     final targetByKey = <String, Map<String, dynamic>>{};
@@ -377,10 +482,44 @@ extension CashierControllerMethods on _ProductListScreenState {
       targetByKey[key] = row;
     }
 
+    if (_isOfflineMode) {
+      for (final sourceRow in sourceRows) {
+        final sourceRowId = (sourceRow['id'] as num?)?.toInt();
+        if (sourceRowId == null) continue;
+        final sourceQty = (sourceRow['quantity'] as num?)?.toInt() ?? 0;
+        final moveQty = moveQtys?[sourceRowId] ?? sourceQty;
+        final productId = (sourceRow['product_id'] as num?)?.toInt() ?? 0;
+        final key = '$productId::${_modifierSignature(sourceRow['modifiers'])}';
+        final existing = targetByKey[key];
+        final existingQty = (existing?['quantity'] as num?)?.toInt() ?? 0;
+        targetByKey[key] = {
+          ...(existing ?? {}),
+          'order_id': targetOrderId,
+          'product_id': productId,
+          'quantity': existingQty + moveQty,
+          'price_at_time':
+              existing?['price_at_time'] ?? sourceRow['price_at_time'],
+          'modifiers': existing?['modifiers'] ?? sourceRow['modifiers'],
+          if (sourceRow.containsKey('products'))
+            'products': sourceRow['products'],
+        };
+      }
+      await LocalOrderItemStoreRepository.instance.replaceForOrder(
+        orderId: targetOrderId,
+        rows: targetByKey.values
+            .map((r) => {...r, 'order_id': targetOrderId})
+            .toList(),
+      );
+      return;
+    }
+
+    // Online path
     for (final sourceRow in sourceRows) {
       final sourceRowId = (sourceRow['id'] as num?)?.toInt();
       if (sourceRowId == null) continue;
       final sourceQty = (sourceRow['quantity'] as num?)?.toInt() ?? 0;
+      final moveQty = moveQtys?[sourceRowId] ?? sourceQty;
+      final isFullMove = moveQty >= sourceQty;
       final productId = (sourceRow['product_id'] as num?)?.toInt() ?? 0;
       final key = '$productId::${_modifierSignature(sourceRow['modifiers'])}';
 
@@ -389,20 +528,48 @@ extension CashierControllerMethods on _ProductListScreenState {
         final targetRowId = (existingTarget['id'] as num?)?.toInt();
         if (targetRowId != null) {
           final newQty =
-              ((existingTarget['quantity'] as num?)?.toInt() ?? 0) + sourceQty;
+              ((existingTarget['quantity'] as num?)?.toInt() ?? 0) + moveQty;
           await supabase
               .from('order_items')
               .update({'quantity': newQty})
               .eq('id', targetRowId);
           targetByKey[key] = {...existingTarget, 'quantity': newQty};
         }
-        await supabase.from('order_items').delete().eq('id', sourceRowId);
+        if (isFullMove) {
+          await supabase.from('order_items').delete().eq('id', sourceRowId);
+        } else {
+          await supabase
+              .from('order_items')
+              .update({'quantity': sourceQty - moveQty})
+              .eq('id', sourceRowId);
+        }
       } else {
-        await supabase
-            .from('order_items')
-            .update({'order_id': targetOrderId})
-            .eq('id', sourceRowId);
-        targetByKey[key] = {...sourceRow, 'order_id': targetOrderId};
+        if (isFullMove) {
+          await supabase
+              .from('order_items')
+              .update({'order_id': targetOrderId})
+              .eq('id', sourceRowId);
+          targetByKey[key] = {...sourceRow, 'order_id': targetOrderId};
+        } else {
+          await supabase
+              .from('order_items')
+              .update({'quantity': sourceQty - moveQty})
+              .eq('id', sourceRowId);
+          await supabase.from('order_items').insert({
+            'order_id': targetOrderId,
+            'product_id': productId,
+            'quantity': moveQty,
+            'price_at_time': sourceRow['price_at_time'],
+            'modifiers': sourceRow['modifiers'],
+          });
+          targetByKey[key] = {
+            'order_id': targetOrderId,
+            'product_id': productId,
+            'quantity': moveQty,
+            'price_at_time': sourceRow['price_at_time'],
+            'modifiers': sourceRow['modifiers'],
+          };
+        }
       }
     }
   }
@@ -421,6 +588,31 @@ extension CashierControllerMethods on _ProductListScreenState {
       final productId = (row['product_id'] as num?)?.toInt() ?? 0;
       final key = '$productId::${_modifierSignature(row['modifiers'])}';
       targetByKey[key] = row;
+    }
+
+    if (_isOfflineMode) {
+      for (final item in items) {
+        final rawModifiers = item.modifiersData ?? item.modifiers?.toJson();
+        final key = '${item.id}::${_modifierSignature(rawModifiers)}';
+        final linePrice = item.price + _localModifierExtra(rawModifiers);
+        final existing = targetByKey[key];
+        final existingQty = (existing?['quantity'] as num?)?.toInt() ?? 0;
+        targetByKey[key] = {
+          ...(existing ?? {}),
+          'order_id': targetOrderId,
+          'product_id': item.id,
+          'quantity': existingQty + item.quantity,
+          'price_at_time': existing?['price_at_time'] ?? linePrice,
+          'modifiers': rawModifiers,
+        };
+      }
+      await LocalOrderItemStoreRepository.instance.replaceForOrder(
+        orderId: targetOrderId,
+        rows: targetByKey.values
+            .map((r) => {...r, 'order_id': targetOrderId})
+            .toList(),
+      );
+      return;
     }
 
     final toInsert = <Map<String, dynamic>>[];
@@ -463,18 +655,19 @@ extension CashierControllerMethods on _ProductListScreenState {
     }
   }
 
-  /// Shows an item-selection dialog so the user can pick which items to move
-  /// into [targetOrderId]. Leaves the rest in the source order.
+  /// Shows an item-selection dialog (with qty control) so the user can pick
+  /// which items — and how many — to move into [targetOrderId].
   Future<void> _mergeSelectedToOrder(int targetOrderId) async {
     final cart = context.read<CartProvider>();
     final allItems = cart.items.values.toList(growable: false);
     if (allItems.isEmpty) return;
 
-    final selectedCartIds = await _showMergeItemSelectionDialog(allItems);
-    if (!mounted || selectedCartIds == null || selectedCartIds.isEmpty) return;
+    // Returns Map<cartId, moveQty>
+    final moveQtys = await _showMergeItemSelectionDialog(allItems);
+    if (!mounted || moveQtys == null || moveQtys.isEmpty) return;
 
     final selectedItems = allItems
-        .where((item) => selectedCartIds.contains(item.cartId))
+        .where((item) => moveQtys.containsKey(item.cartId))
         .toList(growable: false);
 
     if (_currentActiveOrderId != null) {
@@ -486,19 +679,120 @@ extension CashierControllerMethods on _ProductListScreenState {
       );
 
       final rows = await _fetchOrderItemRows(_currentActiveOrderId!);
-      final selectedIds = await _matchSelectedOrderItemIds(
-        rows: rows,
-        selectedItems: selectedItems,
-      );
 
-      if (selectedIds.isEmpty) {
+      // Match each selected cart item to its DB row, respecting move qty.
+      final rowMoves = _matchCartItemsToRowIds(selectedItems, rows, moveQtys);
+      if (rowMoves.isEmpty) {
         throw Exception('Tidak menemukan item yang dipilih di database.');
       }
 
       final selectedRows = rows
-          .where((r) => selectedIds.contains((r['id'] as num?)?.toInt()))
+          .where((r) => rowMoves.containsKey((r['id'] as num?)?.toInt()))
           .toList(growable: false);
-      await _mergeRowsIntoOrder(selectedRows, targetOrderId);
+
+      await _mergeRowsIntoOrder(
+        selectedRows,
+        targetOrderId,
+        moveQtys: rowMoves,
+      );
+
+      if (_isOfflineMode) {
+        // Build the updated source item list after the move.
+        final updatedSourceRows = <Map<String, dynamic>>[];
+        for (final row in rows) {
+          final rowId = (row['id'] as num?)?.toInt();
+          if (rowId == null) continue;
+          final origQty = (row['quantity'] as num?)?.toInt() ?? 0;
+          final moved = rowMoves[rowId] ?? 0;
+          final remaining = origQty - moved;
+          if (remaining > 0) {
+            updatedSourceRows.add({...row, 'quantity': remaining});
+          }
+        }
+        await LocalOrderItemStoreRepository.instance.replaceForOrder(
+          orderId: _currentActiveOrderId!,
+          rows: updatedSourceRows
+              .map((r) => {...r, 'order_id': _currentActiveOrderId!})
+              .toList(),
+        );
+
+        // Queue both orders for sync.
+        final newSrcRows =
+            await LocalOrderItemStoreRepository.instance.fetchByOrderId(
+              _currentActiveOrderId!,
+            );
+        final srcTotal = _calculateTotalFromLocalRows(newSrcRows);
+        final normSrc = _normalizeNum(srcTotal);
+
+        final newTgtRows =
+            await LocalOrderItemStoreRepository.instance.fetchByOrderId(
+              targetOrderId,
+            );
+        final tgtTotal = _calculateTotalFromLocalRows(newTgtRows);
+        final normTgt = _normalizeNum(tgtTotal);
+
+        await cart.enqueueOrderItemsReplace(
+          orderId: targetOrderId,
+          items: newTgtRows
+              .map((r) => {
+                    'order_id': targetOrderId,
+                    'product_id': r['product_id'],
+                    'quantity': r['quantity'],
+                    'price_at_time': r['price_at_time'],
+                    'modifiers': r['modifiers'],
+                  })
+              .toList(),
+          orderUpdates: {
+            'total_price': normTgt,
+            'subtotal': normTgt,
+            'discount_total': 0,
+          },
+        );
+
+        if (newSrcRows.isEmpty) {
+          final allOrders =
+              await LocalOrderStoreRepository.instance.fetchAllOrders();
+          final src = allOrders.firstWhere(
+            (r) => ((r['id'] as num?)?.toInt() ?? -1) == _currentActiveOrderId,
+            orElse: () => <String, dynamic>{},
+          );
+          final cancelNotes = _buildOrderNotes(
+            tableName: _tableNameFromNotes(src['notes']?.toString()),
+            extraNote: 'Partially merged into Order #$targetOrderId',
+          );
+          await LocalOrderStoreRepository.instance.deleteOrder(
+            _currentActiveOrderId!,
+          );
+          await cart.enqueueOrderCancel(
+            orderId: _currentActiveOrderId!,
+            notes: cancelNotes,
+          );
+          _resetCurrentOrderDraft(showMessage: false);
+          return;
+        }
+
+        await cart.enqueueOrderItemsReplace(
+          orderId: _currentActiveOrderId!,
+          items: newSrcRows
+              .map((r) => {
+                    'order_id': _currentActiveOrderId!,
+                    'product_id': r['product_id'],
+                    'quantity': r['quantity'],
+                    'price_at_time': r['price_at_time'],
+                    'modifiers': r['modifiers'],
+                  })
+              .toList(),
+          orderUpdates: {
+            'total_price': normSrc,
+            'subtotal': normSrc,
+            'discount_total': 0,
+          },
+        );
+        await _recalculateAndPersistOrderTotals(_currentActiveOrderId!);
+        await _recalculateAndPersistOrderTotals(targetOrderId);
+        await _reloadCurrentOrderCart();
+        return;
+      }
 
       await _recalculateAndPersistOrderTotals(_currentActiveOrderId!);
       await _recalculateAndPersistOrderTotals(targetOrderId);
@@ -510,22 +804,66 @@ extension CashierControllerMethods on _ProductListScreenState {
       if (sourceCancelled) {
         _resetCurrentOrderDraft(showMessage: false);
       } else {
-        // Reload the current order's cart directly — _switchToActiveOrder would
-        // short-circuit because the source order is already the active order.
         await _reloadCurrentOrderCart();
       }
     } else {
       // Draft mode — upsert selected items into target, merging qtys where possible.
+      // For partial qty, honour the user's chosen move qty.
+      final partialItems = selectedItems.map((item) {
+        final mq = moveQtys[item.cartId] ?? item.quantity;
+        if (mq == item.quantity) return item;
+        return CartItem(
+          id: item.id,
+          name: item.name,
+          price: item.price,
+          category: item.category,
+          description: item.description,
+          imageUrl: item.imageUrl,
+          isAvailable: item.isAvailable,
+          isBundle: item.isBundle,
+          isRecommended: item.isRecommended,
+          productBundles: item.productBundles,
+          cartId: item.cartId,
+          quantity: mq,
+          modifiers: item.modifiers,
+          modifiersData: item.modifiersData,
+        );
+      }).toList(growable: false);
+
       await _upsertCartItemsIntoOrder(
         targetOrderId: targetOrderId,
-        items: selectedItems,
+        items: partialItems,
       );
       await _recalculateAndPersistOrderTotals(targetOrderId);
+
       for (final item in selectedItems) {
+        final mq = moveQtys[item.cartId] ?? item.quantity;
         final key = cart.items.entries
             .firstWhere((e) => e.value.cartId == item.cartId)
             .key;
-        cart.removeItem(key);
+        if (mq >= item.quantity) {
+          cart.removeItem(key);
+        } else {
+          cart.replaceItem(
+            existingKey: key,
+            product: Product(
+              id: item.id,
+              name: item.name,
+              price: item.price,
+              category: item.category,
+              description: item.description,
+              imageUrl: item.imageUrl,
+              isAvailable: item.isAvailable,
+              isBundle: item.isBundle,
+              isRecommended: item.isRecommended,
+              productBundles: item.productBundles,
+              productModifiers: item.productModifiers,
+            ),
+            quantity: item.quantity - mq,
+            modifiers: item.modifiers,
+            modifiersData: item.modifiersData,
+          );
+        }
       }
     }
   }
@@ -549,12 +887,13 @@ extension CashierControllerMethods on _ProductListScreenState {
     }
   }
 
-  Future<Set<String>?> _showMergeItemSelectionDialog(
+  Future<Map<String, int>?> _showMergeItemSelectionDialog(
     List<CartItem> items,
   ) async {
-    final selected = <String>{};
+    // Map<cartId, moveQty>; an entry means item is selected.
+    final moveQtys = <String, int>{};
 
-    return showDialog<Set<String>>(
+    return showDialog<Map<String, int>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (_, setDialogState) => AlertDialog(
@@ -566,7 +905,8 @@ extension CashierControllerMethods on _ProductListScreenState {
               itemCount: items.length,
               itemBuilder: (_, index) {
                 final item = items[index];
-                final isSelected = selected.contains(item.cartId);
+                final isSelected = moveQtys.containsKey(item.cartId);
+                final currentQty = moveQtys[item.cartId] ?? 1;
                 final linePrice =
                     item.price + _modifierExtraFromData(item.modifiersData);
                 final modNames = (item.modifiersData ?? const <dynamic>[])
@@ -581,21 +921,75 @@ extension CashierControllerMethods on _ProductListScreenState {
                           .where((n) => n.isNotEmpty);
                     })
                     .join(', ');
-                return CheckboxListTile(
-                  title: Text(item.name),
-                  subtitle: Text(
-                    'Qty: ${item.quantity} • ${_formatRupiah(linePrice)}'
-                    '${modNames.isNotEmpty ? '\n$modNames' : ''}',
-                    maxLines: 2,
-                  ),
-                  value: isSelected,
-                  onChanged: (checked) => setDialogState(() {
-                    if (checked == true) {
-                      selected.add(item.cartId);
-                    } else {
-                      selected.remove(item.cartId);
-                    }
-                  }),
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CheckboxListTile(
+                      title: Text(item.name),
+                      subtitle: Text(
+                        '${_formatRupiah(linePrice)}'
+                        '${modNames.isNotEmpty ? '\n$modNames' : ''}',
+                        maxLines: 2,
+                      ),
+                      value: isSelected,
+                      onChanged: (checked) => setDialogState(() {
+                        if (checked == true) {
+                          moveQtys[item.cartId] = item.quantity;
+                        } else {
+                          moveQtys.remove(item.cartId);
+                        }
+                      }),
+                    ),
+                    if (isSelected && item.quantity > 1)
+                      Padding(
+                        padding: const EdgeInsets.only(
+                          left: 16,
+                          right: 16,
+                          bottom: 8,
+                        ),
+                        child: Row(
+                          children: [
+                            const SizedBox(width: 40),
+                            const Text('Qty:'),
+                            const SizedBox(width: 8),
+                            IconButton(
+                              icon: const Icon(Icons.remove_circle_outline),
+                              onPressed: currentQty > 1
+                                  ? () => setDialogState(() {
+                                      moveQtys[item.cartId] = currentQty - 1;
+                                    })
+                                  : null,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '$currentQty',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            IconButton(
+                              icon: const Icon(Icons.add_circle_outline),
+                              onPressed: currentQty < item.quantity
+                                  ? () => setDialogState(() {
+                                      moveQtys[item.cartId] = currentQty + 1;
+                                    })
+                                  : null,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '/ ${item.quantity}',
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
                 );
               },
             ),
@@ -606,11 +1000,11 @@ extension CashierControllerMethods on _ProductListScreenState {
               child: const Text('Batal'),
             ),
             FilledButton(
-              onPressed: selected.isEmpty
+              onPressed: moveQtys.isEmpty
                   ? null
                   : () => Navigator.pop(
                       dialogContext,
-                      Set<String>.from(selected),
+                      Map<String, int>.from(moveQtys),
                     ),
               child: const Text('Pindah'),
             ),
@@ -624,14 +1018,6 @@ extension CashierControllerMethods on _ProductListScreenState {
     if (_currentActiveOrderId == null) {
       _showDropdownSnackbar(
         'Pisah nota membutuhkan order aktif. Simpan order dulu lalu coba lagi.',
-      );
-      return;
-    }
-
-    if (_isOfflineMode) {
-      _showDropdownSnackbar(
-        'Pisah nota tidak tersedia saat offline.',
-        isError: true,
       );
       return;
     }
@@ -665,7 +1051,9 @@ extension CashierControllerMethods on _ProductListScreenState {
     final groupItems = List<GroupItem>.from(cart.groupItems);
 
     final activeGroups = groups
-        .where((g) => groupItems.any((gi) => gi.groupId == g.id && gi.assignedQty > 0))
+        .where(
+          (g) => groupItems.any((gi) => gi.groupId == g.id && gi.assignedQty > 0),
+        )
         .toList(growable: false);
 
     if (activeGroups.isEmpty) {
@@ -675,6 +1063,8 @@ extension CashierControllerMethods on _ProductListScreenState {
       );
       return false;
     }
+
+    final isOffline = _isOfflineMode;
 
     try {
       // Persist cart to source order before touching DB rows.
@@ -701,11 +1091,41 @@ extension CashierControllerMethods on _ProductListScreenState {
         rowsByProductId.putIfAbsent(productId, () => []).add(row);
       }
 
+      // For offline queuing: collect (orderRow, itemRows) per new order.
+      final newOrderRowsForQueue = <Map<String, dynamic>>[];
+      final newItemsForQueue = <List<Map<String, dynamic>>>[];
+
       for (final group in activeGroups) {
         final lines = groupItems
             .where((gi) => gi.groupId == group.id && gi.assignedQty > 0)
             .toList(growable: false);
         if (lines.isEmpty) continue;
+
+        // Collect item rows in memory before persisting.
+        final newItemRows = <Map<String, dynamic>>[];
+        for (final gi in lines) {
+          int qtyLeft = gi.assignedQty;
+          final candidateRows = rowsByProductId[gi.orderItemId] ?? [];
+          for (final row in candidateRows) {
+            if (qtyLeft <= 0) break;
+            final rowId = (row['id'] as num?)?.toInt();
+            if (rowId == null) continue;
+            final available = remainingQty[rowId] ?? 0;
+            if (available <= 0) continue;
+            final take = min(qtyLeft, available);
+            remainingQty[rowId] = available - take;
+            qtyLeft -= take;
+            newItemRows.add({
+              'product_id': row['product_id'],
+              'quantity': take,
+              'price_at_time': row['price_at_time'],
+              'modifiers': row['modifiers'],
+              // Preserve joined product data for the local cache so the order
+              // detail view can display items without a network round-trip.
+              if (row['products'] != null) 'products': row['products'],
+            });
+          }
+        }
 
         final newOrderId = await _createActiveOrderDraft(
           orderType: _orderType,
@@ -714,27 +1134,32 @@ extension CashierControllerMethods on _ProductListScreenState {
           parentOrderId: sourceOrderId,
         );
 
-        for (final gi in lines) {
-          int qtyLeft = gi.assignedQty;
-          final candidateRows = rowsByProductId[gi.orderItemId] ?? [];
-
-          for (final row in candidateRows) {
-            if (qtyLeft <= 0) break;
-            final rowId = (row['id'] as num?)?.toInt();
-            if (rowId == null) continue;
-            final available = remainingQty[rowId] ?? 0;
-            if (available <= 0) continue;
-
-            final take = min(qtyLeft, available);
-            remainingQty[rowId] = available - take;
-            qtyLeft -= take;
-
+        if (isOffline) {
+          await LocalOrderItemStoreRepository.instance.replaceForOrder(
+            orderId: newOrderId,
+            rows: newItemRows
+                .map((r) => {...r, 'order_id': newOrderId})
+                .toList(),
+          );
+          final allOrders =
+              await LocalOrderStoreRepository.instance.fetchAllOrders();
+          final orderRow = allOrders.firstWhere(
+            (r) => ((r['id'] as num?)?.toInt() ?? -1) == newOrderId,
+            orElse: () => <String, dynamic>{'id': newOrderId},
+          );
+          newOrderRowsForQueue.add(orderRow);
+          // Strip joined data before queueing — Supabase insert does not
+          // accept the 'products' key (it's a foreign-table join alias).
+          newItemsForQueue.add(
+            newItemRows
+                .map((r) => Map<String, dynamic>.from(r)..remove('products'))
+                .toList(),
+          );
+        } else {
+          for (final row in newItemRows) {
             await supabase.from('order_items').insert({
+              ...row,
               'order_id': newOrderId,
-              'product_id': row['product_id'],
-              'quantity': take,
-              'price_at_time': row['price_at_time'],
-              'modifiers': row['modifiers'],
             });
           }
         }
@@ -742,21 +1167,65 @@ extension CashierControllerMethods on _ProductListScreenState {
         await _recalculateAndPersistOrderTotals(newOrderId);
       }
 
-      // Update the source order: shrink rows that were partially taken,
-      // delete rows that were fully moved out.
-      for (final row in sourceRows) {
-        final rowId = (row['id'] as num?)?.toInt();
-        if (rowId == null) continue;
-        final original = (row['quantity'] as num?)?.toInt() ?? 0;
-        final remaining = remainingQty[rowId] ?? 0;
+      if (isOffline) {
+        // Save updated source items to local store.
+        final updatedSourceRows = <Map<String, dynamic>>[];
+        for (final row in sourceRows) {
+          final rowId = (row['id'] as num?)?.toInt();
+          if (rowId == null) continue;
+          final remaining = remainingQty[rowId] ?? 0;
+          if (remaining > 0) {
+            updatedSourceRows.add({
+              ...row,
+              'quantity': remaining,
+              'order_id': sourceOrderId,
+            });
+          }
+        }
+        await LocalOrderItemStoreRepository.instance.replaceForOrder(
+          orderId: sourceOrderId,
+          rows: updatedSourceRows,
+        );
 
-        if (remaining <= 0) {
-          await supabase.from('order_items').delete().eq('id', rowId);
-        } else if (remaining < original) {
-          await supabase
-              .from('order_items')
-              .update({'quantity': remaining})
-              .eq('id', rowId);
+        // Queue all new orders.
+        for (var i = 0; i < newOrderRowsForQueue.length; i++) {
+          await cart.enqueueNewOrder(
+            order: newOrderRowsForQueue[i],
+            items: newItemsForQueue[i],
+          );
+        }
+
+        // Queue source update only if it won't be cancelled (checked below).
+        final srcRemaining =
+            await LocalOrderItemStoreRepository.instance.fetchByOrderId(
+          sourceOrderId,
+        );
+        if (srcRemaining.isNotEmpty) {
+          final srcTotal = _calculateTotalFromLocalRows(srcRemaining);
+          await cart.enqueueOrderItemsReplace(
+            orderId: sourceOrderId,
+            items: updatedSourceRows,
+            orderUpdates: {
+              'total_price': _normalizeNum(srcTotal),
+              'subtotal': _normalizeNum(srcTotal),
+            },
+          );
+        }
+      } else {
+        // Online: update source rows in Supabase.
+        for (final row in sourceRows) {
+          final rowId = (row['id'] as num?)?.toInt();
+          if (rowId == null) continue;
+          final original = (row['quantity'] as num?)?.toInt() ?? 0;
+          final remaining = remainingQty[rowId] ?? 0;
+          if (remaining <= 0) {
+            await supabase.from('order_items').delete().eq('id', rowId);
+          } else if (remaining < original) {
+            await supabase
+                .from('order_items')
+                .update({'quantity': remaining})
+                .eq('id', rowId);
+          }
         }
       }
 
@@ -774,7 +1243,6 @@ extension CashierControllerMethods on _ProductListScreenState {
       if (sourceCancelled) {
         _resetCurrentOrderDraft(showMessage: false);
       } else {
-        // Reload the source order's remaining items directly.
         await _reloadCurrentOrderCart();
       }
 
@@ -815,6 +1283,11 @@ extension CashierControllerMethods on _ProductListScreenState {
               ),
             })
             .eq('id', _currentActiveOrderId!);
+
+        // Remove from local store so it no longer shows in active-order lists.
+        await LocalOrderStoreRepository.instance.deleteOrder(
+          _currentActiveOrderId!,
+        );
       } catch (error) {
         if (!mounted) return;
         _showDropdownSnackbar('Gagal batal pesanan: $error', isError: true);

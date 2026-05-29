@@ -10,9 +10,9 @@ import 'package:uuid/uuid.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '/features/cashier/models/models.dart';
-import 'package:coffee_shop/core/services/local_order_store_repository.dart';
-import 'package:coffee_shop/core/services/local_order_item_store_repository.dart';
-import 'package:coffee_shop/core/services/local_cart_group_store_repository.dart';
+import 'package:coffee_shop/core/repositories/local_order_store_repository.dart';
+import 'package:coffee_shop/core/repositories/local_order_item_store_repository.dart';
+import 'package:coffee_shop/core/repositories/local_cart_group_store_repository.dart';
 import '../data/offline_order_queue_repository.dart';
 
 class CartProvider extends ChangeNotifier {
@@ -348,11 +348,30 @@ class CartProvider extends ChangeNotifier {
 
         try {
           if (eventType == 'order') {
+            final oldLocalId =
+                ((event['order'] as Map?)?['id'] as num?)?.toInt();
             await _submitOfflinePayload(
               supabase,
               event,
               localShiftToRemoteShift: localShiftToRemoteShift,
             );
+            final resolvedId =
+                ((event['order'] as Map?)?['id'] as num?)?.toInt();
+            // If the temp local ID changed to a real remote ID, swap all
+            // local DB entries atomically so no ghost order is left behind.
+            if (oldLocalId != null &&
+                resolvedId != null &&
+                oldLocalId != resolvedId) {
+              await LocalOrderItemStoreRepository.instance.reassignOrderId(
+                oldOrderId: oldLocalId,
+                newOrderId: resolvedId,
+              );
+              await LocalCartGroupStoreRepository.instance.reassignOrderId(
+                oldOrderId: oldLocalId,
+                newOrderId: resolvedId,
+              );
+              await LocalOrderStoreRepository.instance.deleteOrder(oldLocalId);
+            }
             await LocalOrderStoreRepository.instance.upsertOrder(
               Map<String, dynamic>.from(event['order'] as Map),
             );
@@ -451,6 +470,49 @@ class CartProvider extends ChangeNotifier {
               throw Exception('Missing shift_id for shift_delete');
             }
             await supabase.from('shifts').delete().eq('id', shiftId);
+          } else if (eventType == 'order_items_replace') {
+            final replaceOrderId = (event['order_id'] as num?)?.toInt();
+            if (replaceOrderId == null) {
+              throw Exception('Missing order_id for order_items_replace');
+            }
+            final orderUpdates = Map<String, dynamic>.from(
+              event['order_updates'] as Map? ?? {},
+            );
+            final replaceItems = (event['items'] as List<dynamic>? ?? [])
+                .whereType<Map>()
+                .map((r) => Map<String, dynamic>.from(r))
+                .toList(growable: false);
+            await supabase
+                .from('order_items')
+                .delete()
+                .eq('order_id', replaceOrderId);
+            if (replaceItems.isNotEmpty) {
+              // Strip joined-table aliases (e.g. 'products') that are stored
+              // locally for display but are not columns in order_items.
+              await supabase.from('order_items').insert(
+                replaceItems
+                    .map((r) => Map<String, dynamic>.from(r)..remove('products'))
+                    .toList(),
+              );
+            }
+            if (orderUpdates.isNotEmpty) {
+              await supabase
+                  .from('orders')
+                  .update(orderUpdates)
+                  .eq('id', replaceOrderId);
+            }
+          } else if (eventType == 'order_cancel') {
+            final cancelOrderId = (event['order_id'] as num?)?.toInt();
+            if (cancelOrderId == null) {
+              throw Exception('Missing order_id for order_cancel');
+            }
+            final cancelNotes = event['notes']?.toString();
+            final cancelPayload = <String, dynamic>{'status': 'cancelled'};
+            if (cancelNotes != null) cancelPayload['notes'] = cancelNotes;
+            await supabase
+                .from('orders')
+                .update(cancelPayload)
+                .eq('id', cancelOrderId);
           }
 
           await _offlineRepo.removePending(localTxnId);
@@ -682,7 +744,8 @@ class CartProvider extends ChangeNotifier {
             final mappedOrderItemId = tempOrderItemId == null
                 ? null
                 : itemIdByProduct[tempOrderItemId] ?? tempOrderItemId;
-            return {...item, 'order_item_id': mappedOrderItemId};
+            return {...item, 'order_item_id': mappedOrderItemId}
+              ..remove('cart_line_key');
           })
           .where((row) => row['order_item_id'] != null)
           .toList(growable: false);
@@ -1109,7 +1172,9 @@ class CartProvider extends ChangeNotifier {
           if (mappedOrderItemId == null) {
             return null;
           }
-          return item.toJson()..['order_item_id'] = mappedOrderItemId;
+          return item.toJson()
+            ..['order_item_id'] = mappedOrderItemId
+            ..remove('cart_line_key');
         })
         .whereType<Map<String, dynamic>>()
         .toList(growable: false);
@@ -1126,6 +1191,7 @@ class CartProvider extends ChangeNotifier {
             'order_id': orderId,
             'quantity': item.quantity,
             'product_id': item.id,
+            'price_at_time': _lineUnitPrice(item),
             'modifiers': _serializeItemModifiers(item),
             'products': {
               'id': item.id,
@@ -1211,6 +1277,7 @@ class CartProvider extends ChangeNotifier {
             DateTime.now().toUtc().toIso8601String(),
       };
 
+      Object? supabaseError;
       try {
         final orderUpdatePayload = <String, dynamic>{
           'total_price': normalizedTotal,
@@ -1261,8 +1328,11 @@ class CartProvider extends ChangeNotifier {
           }
         }
         await _syncCartGroupsToSupabase(supabase: supabase, orderId: orderId);
-      } catch (_) {}
+      } catch (e) {
+        supabaseError = e;
+      }
 
+      // Always update local cache so offline reads stay consistent.
       await LocalOrderStoreRepository.instance.upsertOrder(
         Map<String, dynamic>.from(localOrderPayload),
       );
@@ -1287,6 +1357,13 @@ class CartProvider extends ChangeNotifier {
         );
       }
 
+      // Re-throw after local update so the caller can react (e.g. not clear
+      // cart or print receipt when the remote write actually failed).
+      // When offline (no connectivity / server unreachable) the Supabase error
+      // is expected — local cache was already updated, so do not block the UX.
+      if (supabaseError != null && hasNetworkConnection && isServerReachable) {
+        throw supabaseError;
+      }
       return orderId;
     })();
 
@@ -1531,6 +1608,90 @@ class CartProvider extends ChangeNotifier {
   void dispose() {
     _connectivitySubscription?.cancel();
     super.dispose();
+  }
+
+  Future<void> enqueueOrderItemsReplace({
+    required int orderId,
+    required List<Map<String, dynamic>> items,
+    required Map<String, dynamic> orderUpdates,
+  }) async {
+    await _offlineRepo.init();
+    final localTxnId = _uuid.v4();
+    final payload = {
+      'local_txn_id': localTxnId,
+      'event_type': 'order_items_replace',
+      'occurred_at_epoch': DateTime.now().millisecondsSinceEpoch,
+      'queued_at': DateTime.now().toIso8601String(),
+      'order_id': orderId,
+      'order_updates': orderUpdates,
+      'items': items,
+    };
+    await _offlineRepo.enqueue(payload);
+    await _offlineRepo.addLog(
+      level: 'info',
+      message: 'Queued order_items_replace for order#$orderId',
+      localTxnId: localTxnId,
+      payload: payload,
+    );
+    await _refreshOfflineCounters();
+    notifyListeners();
+  }
+
+  Future<void> enqueueOrderCancel({
+    required int orderId,
+    String? notes,
+  }) async {
+    await _offlineRepo.init();
+    final localTxnId = _uuid.v4();
+    final payload = <String, dynamic>{
+      'local_txn_id': localTxnId,
+      'event_type': 'order_cancel',
+      'occurred_at_epoch': DateTime.now().millisecondsSinceEpoch,
+      'queued_at': DateTime.now().toIso8601String(),
+      'order_id': orderId,
+      if (notes != null) 'notes': notes,
+    };
+    await _offlineRepo.enqueue(payload);
+    await _offlineRepo.addLog(
+      level: 'info',
+      message: 'Queued order_cancel for order#$orderId',
+      localTxnId: localTxnId,
+      payload: payload,
+    );
+    await _refreshOfflineCounters();
+    notifyListeners();
+  }
+
+  Future<void> enqueueNewOrder({
+    required Map<String, dynamic> order,
+    required List<Map<String, dynamic>> items,
+  }) async {
+    await _offlineRepo.init();
+    final localTxnId = _uuid.v4();
+    final orderWithTxn = Map<String, dynamic>.from(order);
+    final existingNotes = orderWithTxn['notes']?.toString() ?? '';
+    orderWithTxn['notes'] = existingNotes.isEmpty
+        ? 'client_txn_id:$localTxnId'
+        : '$existingNotes\nclient_txn_id:$localTxnId';
+    final payload = {
+      'local_txn_id': localTxnId,
+      'event_type': 'order',
+      'occurred_at_epoch': DateTime.now().millisecondsSinceEpoch,
+      'queued_at': DateTime.now().toIso8601String(),
+      'order': orderWithTxn,
+      'items': items,
+      'cart_groups': const <dynamic>[],
+      'group_items': const <dynamic>[],
+    };
+    await _offlineRepo.enqueue(payload);
+    await _offlineRepo.addLog(
+      level: 'info',
+      message: 'Queued new order#${order['id']} for sync',
+      localTxnId: localTxnId,
+      payload: payload,
+    );
+    await _refreshOfflineCounters();
+    notifyListeners();
   }
 
   void clearGroups() {

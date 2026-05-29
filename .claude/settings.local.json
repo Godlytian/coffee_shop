@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(xargs grep -l \"class.*Repository\")"
+      "Bash(xargs grep -l \"class.*Repository\")",
+      "Bash(Get-ChildItem -Path \"d:\\\\projects\\\\coffee_shop\\\\lib\" -Recurse -Force)",
+      "Bash(Select-Object FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "PowerShell(New-Item -ItemType Directory -Force \"d:\\\\projects\\\\coffee_shop\\\\lib\\\\features\\\\printing\\\\data\")",
+      "PowerShell(Copy-Item \"d:\\\\projects\\\\coffee_shop\\\\lib\\\\features\\\\printing\\\\services\\\\thermal_printer_service.dart\" \"d:\\\\projects\\\\coffee_shop\\\\lib\\\\features\\\\printing\\\\data\\\\thermal_printer_service.dart\")",
+      "PowerShell(Copy-Item \"d:\\\\projects\\\\coffee_shop\\\\lib\\\\features\\\\reports\\\\presentation\\\\sync_screen.dart\" \"d:\\\\projects\\\\coffee_shop\\\\lib\\\\features\\\\reports\\\\presentation\\\\screens\\\\sync_screen.dart\")"
     ]
   }
 }

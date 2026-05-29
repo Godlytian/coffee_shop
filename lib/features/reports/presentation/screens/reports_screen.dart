@@ -2,6 +2,8 @@ import 'package:coffee_shop/features/reports/data/reports_repository.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
+enum ReportPeriod { day, week, month, year }
+
 class ReportsScreen extends StatefulWidget {
   const ReportsScreen({super.key});
 
@@ -11,91 +13,507 @@ class ReportsScreen extends StatefulWidget {
 
 class _ReportsScreenState extends State<ReportsScreen> {
   final _repo = ReportsRepository.instance;
-  DateTime _selectedDate = DateTime.now();
-  bool _showTopItemsBarChart = false;
 
-  // Formatter for pretty numbers (e.g., 1,500,000 -> 1.5M, 150,000 -> 150K)
-  String _formatCompact(double value) {
-    if (value == 0) return '0';
-    if (value >= 1000000) {
-      return '${(value / 1000000).toStringAsFixed(1).replaceAll(RegExp(r'\.0$'), '')}M';
-    }
-    if (value >= 1000) {
-      return '${(value / 1000).toStringAsFixed(0)}K';
-    }
-    return value.toStringAsFixed(0);
+  ReportPeriod _period = ReportPeriod.week;
+  DateTime _selectedDate = DateTime.now();
+  int _selectedMonth = DateTime.now().month;
+  int _selectedYear = DateTime.now().year;
+  bool _showTopItemsBarChart = false;
+  Future<Map<String, dynamic>>? _dataFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _dataFuture = _loadData();
   }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  DateTime _weekStart(DateTime d) =>
+      DateTime(d.year, d.month, d.day - (d.weekday - 1));
+
+  String _weekdayShort(int wd) =>
+      const ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'][wd - 1];
+
+  String _monthShort(int m) => const [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ][m - 1];
+
+  String _monthFull(int m) => const [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ][m - 1];
+
+  String _formatCompact(double v) {
+    if (v == 0) return '0';
+    if (v >= 1000000) {
+      return '${(v / 1000000).toStringAsFixed(1).replaceAll(RegExp(r'\.0$'), '')}M';
+    }
+    if (v >= 1000) return '${(v / 1000).toStringAsFixed(0)}K';
+    return v.toStringAsFixed(0);
+  }
+
+  double _barWidth(int count) {
+    if (count <= 4) return 30;
+    if (count <= 7) return 20;
+    return 16;
+  }
+
+  double _shiftBarWidth(int count) {
+    if (count <= 4) return 18;
+    if (count <= 7) return 14;
+    return 10;
+  }
+
+  // ── Selection label ─────────────────────────────────────────────────────────
+
+  String _selectionLabel() {
+    switch (_period) {
+      case ReportPeriod.day:
+        return 'Day: ${_selectedDate.day} ${_monthShort(_selectedDate.month)} ${_selectedDate.year}';
+      case ReportPeriod.week:
+        final ws = _weekStart(_selectedDate);
+        final we = ws.add(const Duration(days: 6));
+        return 'Week: ${ws.day} ${_monthShort(ws.month)} – ${we.day} ${_monthShort(we.month)} ${we.year}';
+      case ReportPeriod.month:
+        return 'Month: ${_monthFull(_selectedMonth)} $_selectedYear';
+      case ReportPeriod.year:
+        return 'Year: $_selectedYear';
+    }
+  }
+
+  // ── Pickers ─────────────────────────────────────────────────────────────────
+
+  Future<void> _openPicker() async {
+    if (_period == ReportPeriod.day || _period == ReportPeriod.week) {
+      final picked = await showDatePicker(
+        context: context,
+        firstDate: DateTime(2020),
+        lastDate: DateTime.now().add(const Duration(days: 365)),
+        initialDate: _selectedDate,
+      );
+      if (picked != null) {
+        setState(() {
+          _selectedDate = picked;
+          _dataFuture = _loadData();
+        });
+      }
+    } else if (_period == ReportPeriod.month) {
+      await _showMonthPicker();
+    } else {
+      await _showYearPicker();
+    }
+  }
+
+  Future<void> _showMonthPicker() async {
+    int tempYear = _selectedYear;
+    const names = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final result = await showDialog<Map<String, int>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, sd) => AlertDialog(
+          title: Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.chevron_left),
+                onPressed: () => sd(() => tempYear--),
+              ),
+              Expanded(
+                child: Text(
+                  '$tempYear',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.chevron_right),
+                onPressed: () => sd(() => tempYear++),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 280,
+            child: GridView.builder(
+              shrinkWrap: true,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                childAspectRatio: 1.8,
+              ),
+              itemCount: 12,
+              itemBuilder: (ctx, i) {
+                final isSelected =
+                    _selectedMonth == i + 1 && _selectedYear == tempYear;
+                return InkWell(
+                  onTap: () =>
+                      Navigator.pop(ctx, {'year': tempYear, 'month': i + 1}),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    alignment: Alignment.center,
+                    margin: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? Theme.of(ctx).primaryColor.withValues(alpha: 0.2)
+                          : null,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      names[i],
+                      style: TextStyle(
+                        fontWeight: isSelected
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    if (result != null) {
+      setState(() {
+        _selectedYear = result['year']!;
+        _selectedMonth = result['month']!;
+        _dataFuture = _loadData();
+      });
+    }
+  }
+
+  Future<void> _showYearPicker() async {
+    final currentYear = DateTime.now().year;
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Select Year'),
+        content: SizedBox(
+          width: 200,
+          height: 250,
+          child: ListView.builder(
+            itemCount: currentYear - 2019,
+            itemBuilder: (ctx, i) {
+              final year = currentYear - i;
+              return ListTile(
+                title: Text('$year', textAlign: TextAlign.center),
+                selected: year == _selectedYear,
+                selectedTileColor: Theme.of(
+                  ctx,
+                ).primaryColor.withValues(alpha: 0.12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                onTap: () => Navigator.pop(ctx, year),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    if (picked != null) {
+      setState(() {
+        _selectedYear = picked;
+        _dataFuture = _loadData();
+      });
+    }
+  }
+
+  // ── Data loading ─────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> _loadData() {
+    if (_period == ReportPeriod.day || _period == ReportPeriod.week) {
+      return _loadWeeklyData();
+    } else if (_period == ReportPeriod.month) {
+      return _loadMonthlyData();
+    } else {
+      return _loadYearlyData();
+    }
+  }
+
+  Future<Map<String, dynamic>> _loadWeeklyData() async {
+    final ws = _weekStart(_selectedDate);
+    final List<double> salesData = [];
+    final List<Map<String, double>> shiftData = [];
+    final List<String> xLabels = [];
+
+    for (int i = 0; i < 7; i++) {
+      final d = ws.add(Duration(days: i));
+      salesData.add(await _repo.fetchDailySalesSummary(d));
+      shiftData.add(await _repo.fetchShiftSummary(d));
+      xLabels.add(_weekdayShort(d.weekday));
+    }
+
+    final Map<String, double> payment;
+    final List<Map<String, dynamic>> topItems;
+
+    if (_period == ReportPeriod.day) {
+      payment = await _repo.fetchPaymentMethodBreakdown(_selectedDate);
+      topItems = await _repo.fetchTopSellingItems(
+        date: _selectedDate,
+        limit: 5,
+      );
+    } else {
+      final we = ws.add(const Duration(days: 6));
+      payment = await _repo.fetchPaymentMethodBreakdownRange(ws, we);
+      topItems = await _repo.fetchTopSellingItemsInRange(ws, we, limit: 5);
+    }
+
+    return {
+      'sales_data': salesData,
+      'shift_data': shiftData,
+      'x_labels': xLabels,
+      'payment_methods': payment,
+      'top_items': topItems,
+      'sales_title': 'Weekly Sales',
+      'shift_title': 'Shift Sales (Weekly)',
+    };
+  }
+
+  Future<Map<String, dynamic>> _loadMonthlyData() async {
+    final lastDay = DateTime(_selectedYear, _selectedMonth + 1, 0).day;
+    final buckets = [
+      [1, 7],
+      [8, 14],
+      [15, 21],
+      [22, lastDay],
+    ];
+    final List<double> salesData = [];
+    final List<Map<String, double>> shiftData = [];
+
+    for (final b in buckets) {
+      final s = DateTime(_selectedYear, _selectedMonth, b[0]);
+      final e = DateTime(_selectedYear, _selectedMonth, b[1]);
+      salesData.add(await _repo.fetchSalesInRange(s, e));
+      shiftData.add(await _repo.fetchShiftSummaryInRange(s, e));
+    }
+
+    final mStart = DateTime(_selectedYear, _selectedMonth, 1);
+    final mEnd = DateTime(_selectedYear, _selectedMonth, lastDay);
+    final payment = await _repo.fetchPaymentMethodBreakdownRange(mStart, mEnd);
+    final topItems = await _repo.fetchTopSellingItemsInRange(
+      mStart,
+      mEnd,
+      limit: 5,
+    );
+
+    return {
+      'sales_data': salesData,
+      'shift_data': shiftData,
+      'x_labels': const ['Wk 1', 'Wk 2', 'Wk 3', 'Wk 4'],
+      'payment_methods': payment,
+      'top_items': topItems,
+      'sales_title':
+          'Sales by Week (${_monthShort(_selectedMonth)} $_selectedYear)',
+      'shift_title': 'Shift Sales by Week',
+    };
+  }
+
+  Future<Map<String, dynamic>> _loadYearlyData() async {
+    final List<double> salesData = [];
+    final List<Map<String, double>> shiftData = [];
+    const xLabels = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+
+    for (int m = 1; m <= 12; m++) {
+      final s = DateTime(_selectedYear, m, 1);
+      final e = DateTime(_selectedYear, m + 1, 0);
+      salesData.add(await _repo.fetchSalesInRange(s, e));
+      shiftData.add(await _repo.fetchShiftSummaryInRange(s, e));
+    }
+
+    final yStart = DateTime(_selectedYear, 1, 1);
+    final yEnd = DateTime(_selectedYear, 12, 31);
+    final payment = await _repo.fetchPaymentMethodBreakdownRange(yStart, yEnd);
+    final topItems = await _repo.fetchTopSellingItemsInRange(
+      yStart,
+      yEnd,
+      limit: 5,
+    );
+
+    return {
+      'sales_data': salesData,
+      'shift_data': shiftData,
+      'x_labels': xLabels,
+      'payment_methods': payment,
+      'top_items': topItems,
+      'sales_title': 'Sales by Month ($_selectedYear)',
+      'shift_title': 'Shift Sales by Month',
+    };
+  }
+
+  // ── Build ───────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Reports Dashboard'),
-        actions: [
-          IconButton(
-            onPressed: () async {
-              final picked = await showDatePicker(
-                context: context,
-                firstDate: DateTime(2020),
-                lastDate: DateTime.now().add(const Duration(days: 365)),
-                initialDate: _selectedDate,
-              );
-              if (picked != null) {
-                setState(() => _selectedDate = picked);
-              }
-            },
-            icon: const Icon(Icons.calendar_month),
+        title: const Text('Reports'),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(52),
+          child: Padding(
+            padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
+            child: SegmentedButton<ReportPeriod>(
+              segments: const [
+                ButtonSegment(value: ReportPeriod.day, label: Text('Day')),
+                ButtonSegment(value: ReportPeriod.week, label: Text('Week')),
+                ButtonSegment(value: ReportPeriod.month, label: Text('Month')),
+                ButtonSegment(value: ReportPeriod.year, label: Text('Year')),
+              ],
+              selected: {_period},
+              onSelectionChanged: (s) => setState(() {
+                _period = s.first;
+                _dataFuture = _loadData();
+              }),
+            ),
+          ),
+        ),
+      ),
+      body: Column(
+        children: [
+          // Date selector row
+          InkWell(
+            onTap: _openPicker,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.calendar_today, size: 16),
+                  const SizedBox(width: 8),
+                  Text(
+                    _selectionLabel(),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.arrow_drop_down, size: 20),
+                ],
+              ),
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: FutureBuilder<Map<String, dynamic>>(
+              future: _dataFuture,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final data = snapshot.data!;
+                final isDesktop = MediaQuery.of(context).size.width > 900;
+                final salesData = data['sales_data'] as List<double>;
+                final shiftData =
+                    data['shift_data'] as List<Map<String, double>>;
+                final xLabels = data['x_labels'] as List<String>;
+
+                return GridView.count(
+                  crossAxisCount: isDesktop ? 2 : 1,
+                  padding: const EdgeInsets.all(16),
+                  crossAxisSpacing: 16,
+                  mainAxisSpacing: 16,
+                  childAspectRatio: isDesktop ? 1.5 : 1.2,
+                  children: [
+                    _buildSalesChart(
+                      salesData,
+                      xLabels,
+                      data['sales_title'] as String,
+                    ),
+                    _buildShiftChart(
+                      shiftData,
+                      xLabels,
+                      data['shift_title'] as String,
+                    ),
+                    _buildPaymentMethodsChart(
+                      data['payment_methods'] as Map<String, double>,
+                    ),
+                    _buildTopItemsChart(
+                      data['top_items'] as List<Map<String, dynamic>>,
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ],
-      ),
-      body: FutureBuilder<Map<String, dynamic>>(
-        future: _loadData(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final data = snapshot.data!;
-          final isDesktop = MediaQuery.of(context).size.width > 900;
-
-          return GridView.count(
-            crossAxisCount: isDesktop ? 2 : 1,
-            padding: const EdgeInsets.all(16),
-            crossAxisSpacing: 16,
-            mainAxisSpacing: 16,
-            childAspectRatio: isDesktop ? 1.5 : 1.2,
-            children: [
-              _buildWeeklySalesChart(data['weekly_sales']),
-              _buildWeeklyShiftSummaryChart(data['weekly_shifts']),
-              _buildPaymentMethodsChart(data['payment_methods']),
-              _buildTopItemsChart(data['top_items']),
-            ],
-          );
-        },
       ),
     );
   }
 
-  Widget _buildWeeklySalesChart(List<double> weeklySales) {
+  // ── Chart builders ──────────────────────────────────────────────────────────
+
+  Widget _buildSalesChart(
+    List<double> salesData,
+    List<String> xLabels,
+    String title,
+  ) {
+    final bw = _barWidth(salesData.length);
     return _ChartCard(
-      title: 'Daily Sales (Last 7 Days)',
+      title: title,
       child: BarChart(
         BarChartData(
           barTouchData: BarTouchData(
             enabled: true,
             touchTooltipData: BarTouchTooltipData(
-              getTooltipColor: (group) => Colors.blueGrey.withOpacity(0.9),
+              getTooltipColor: (g) => Colors.blueGrey.withValues(alpha: 0.9),
               tooltipPadding: const EdgeInsets.symmetric(
                 horizontal: 12,
                 vertical: 8,
               ),
-              getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                final date = _selectedDate.subtract(
-                  Duration(days: 6 - group.x.toInt()),
-                );
-                final dateStr = _formatDateShort(date);
-
+              getTooltipItem: (group, gi, rod, ri) {
+                final label = xLabels[group.x.toInt()];
                 return BarTooltipItem(
-                  'Total Sales ($dateStr)\n',
+                  '$label\n',
                   const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -115,14 +533,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
               },
             ),
           ),
-          barGroups: weeklySales.asMap().entries.map((e) {
+          barGroups: salesData.asMap().entries.map((e) {
             return BarChartGroupData(
               x: e.key,
               barRods: [
                 BarChartRodData(
                   toY: e.value,
                   color: Theme.of(context).primaryColor,
-                  width: 20,
+                  width: bw,
                   borderRadius: const BorderRadius.vertical(
                     top: Radius.circular(4),
                   ),
@@ -130,77 +548,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
               ],
             );
           }).toList(),
-          titlesData: FlTitlesData(
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                getTitlesWidget: (value, meta) {
-                  final index = value.toInt();
-                  if (index < 0 || index >= weeklySales.length)
-                    return const SizedBox();
-
-                  final d = _selectedDate.subtract(
-                    Duration(days: (weeklySales.length - 1) - index),
-                  );
-                  final weekdays = [
-                    'Sen',
-                    'Sel',
-                    'Rab',
-                    'Kam',
-                    'Jum',
-                    'Sab',
-                    'Min',
-                  ];
-
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: Text(
-                      weekdays[d.weekday - 1],
-                      style: const TextStyle(fontSize: 10),
-                    ),
-                  );
-                },
-              ),
-            ),
-            leftTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                reservedSize: 40,
-                getTitlesWidget: (value, meta) {
-                  if (value == 0) return const SizedBox();
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8.0),
-                    child: Text(
-                      _formatCompact(value),
-                      style: const TextStyle(fontSize: 10, color: Colors.grey),
-                      textAlign: TextAlign.right,
-                    ),
-                  );
-                },
-              ),
-            ),
-            topTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-            rightTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-          ),
+          titlesData: _titlesData(xLabels),
           borderData: FlBorderData(show: false),
-          gridData: FlGridData(
-            show: true,
-            drawVerticalLine: false,
-            getDrawingHorizontalLine: (value) =>
-                FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
-          ),
+          gridData: _gridData(),
         ),
       ),
     );
   }
 
-  Widget _buildWeeklyShiftSummaryChart(List<Map<String, double>> weeklyShifts) {
+  Widget _buildShiftChart(
+    List<Map<String, double>> shiftData,
+    List<String> xLabels,
+    String title,
+  ) {
+    final bw = _shiftBarWidth(shiftData.length);
     return _ChartCard(
-      title: 'Shift 1 vs Shift 2 Sales (Weekly)',
+      title: title,
       action: const Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -214,26 +577,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
           barTouchData: BarTouchData(
             enabled: true,
             touchTooltipData: BarTouchTooltipData(
-              getTooltipColor: (group) => Colors.blueGrey.withOpacity(0.9),
+              getTooltipColor: (g) => Colors.blueGrey.withValues(alpha: 0.9),
               tooltipPadding: const EdgeInsets.symmetric(
                 horizontal: 12,
                 vertical: 8,
               ),
-              tooltipMargin: 8,
-              getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                final date = _selectedDate.subtract(
-                  Duration(days: 6 - group.x.toInt()),
-                );
-                final dateStr = _formatDateShort(date);
-
-                final shiftName = rodIndex == 0 ? 'Shift 1' : 'Shift 2';
-
+              getTooltipItem: (group, gi, rod, ri) {
+                final label = xLabels[group.x.toInt()];
+                final shift = ri == 0 ? 'Shift 1' : 'Shift 2';
                 return BarTooltipItem(
-                  '$shiftName ($dateStr)\n',
+                  '$shift ($label)\n',
                   const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
-                    fontSize: 14,
+                    fontSize: 13,
                   ),
                   children: [
                     TextSpan(
@@ -241,7 +598,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       style: const TextStyle(
                         color: Colors.yellow,
                         fontSize: 12,
-                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],
@@ -249,15 +605,15 @@ class _ReportsScreenState extends State<ReportsScreen> {
               },
             ),
           ),
-          barGroups: weeklyShifts.asMap().entries.map((e) {
+          barGroups: shiftData.asMap().entries.map((e) {
             return BarChartGroupData(
               x: e.key,
-              barsSpace: 4,
+              barsSpace: 3,
               barRods: [
                 BarChartRodData(
                   toY: e.value['shift_1'] ?? 0,
                   color: Colors.blue,
-                  width: 14,
+                  width: bw,
                   borderRadius: const BorderRadius.vertical(
                     top: Radius.circular(4),
                   ),
@@ -265,7 +621,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 BarChartRodData(
                   toY: e.value['shift_2'] ?? 0,
                   color: Colors.purple,
-                  width: 14,
+                  width: bw,
                   borderRadius: const BorderRadius.vertical(
                     top: Radius.circular(4),
                   ),
@@ -273,60 +629,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
               ],
             );
           }).toList(),
-          titlesData: FlTitlesData(
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                getTitlesWidget: (value, meta) {
-                  final index = value.toInt();
-                  if (index < 0 || index >= 7) return const SizedBox();
-                  final d = _selectedDate.subtract(Duration(days: 6 - index));
-                  final weekdays = [
-                    'Sen',
-                    'Sel',
-                    'Rab',
-                    'Kam',
-                    'Jum',
-                    'Sab',
-                    'Min',
-                  ];
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: Text(
-                      weekdays[d.weekday - 1],
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            leftTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                reservedSize: 40,
-                getTitlesWidget: (value, meta) {
-                  return Text(
-                    _formatCompact(value),
-                    style: const TextStyle(fontSize: 9, color: Colors.grey),
-                  );
-                },
-              ),
-            ),
-            topTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-            rightTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-          ),
+          titlesData: _titlesData(xLabels, bold: true),
           gridData: FlGridData(
             show: true,
             drawVerticalLine: false,
-            getDrawingHorizontalLine: (value) =>
-                FlLine(color: Colors.grey.withOpacity(0.1), strokeWidth: 1),
+            getDrawingHorizontalLine: (v) => FlLine(
+              color: Colors.grey.withValues(alpha: 0.1),
+              strokeWidth: 1,
+            ),
           ),
           borderData: FlBorderData(show: false),
         ),
@@ -334,9 +644,58 @@ class _ReportsScreenState extends State<ReportsScreen> {
     );
   }
 
+  FlTitlesData _titlesData(List<String> xLabels, {bool bold = false}) {
+    return FlTitlesData(
+      bottomTitles: AxisTitles(
+        sideTitles: SideTitles(
+          showTitles: true,
+          getTitlesWidget: (value, meta) {
+            final i = value.toInt();
+            if (i < 0 || i >= xLabels.length) return const SizedBox();
+            return Padding(
+              padding: const EdgeInsets.only(top: 8.0),
+              child: Text(
+                xLabels[i],
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+      leftTitles: AxisTitles(
+        sideTitles: SideTitles(
+          showTitles: true,
+          reservedSize: 40,
+          getTitlesWidget: (value, meta) {
+            if (value == 0) return const SizedBox();
+            return Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: Text(
+                _formatCompact(value),
+                style: const TextStyle(fontSize: 9, color: Colors.grey),
+                textAlign: TextAlign.right,
+              ),
+            );
+          },
+        ),
+      ),
+      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+    );
+  }
+
+  FlGridData _gridData() => FlGridData(
+    show: true,
+    drawVerticalLine: false,
+    getDrawingHorizontalLine: (v) =>
+        FlLine(color: Colors.grey.withValues(alpha: 0.2), strokeWidth: 1),
+  );
+
   Widget _buildPaymentMethodsChart(Map<String, double> methods) {
     final hasData = (methods['cash'] ?? 0) > 0 || (methods['qris'] ?? 0) > 0;
-
     return _ChartCard(
       title: 'Payment Methods',
       child: !hasData
@@ -383,15 +742,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
         child: Center(child: Text('No items sold')),
       );
     }
-
-    final colors = [
+    const colors = [
       Colors.blue,
       Colors.red,
       Colors.green,
       Colors.orange,
       Colors.purple,
     ];
-
     return _ChartCard(
       title: 'Top Selling Items',
       action: IconButton(
@@ -404,15 +761,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
               BarChartData(
                 barTouchData: BarTouchData(
                   touchTooltipData: BarTouchTooltipData(
-                    getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                      return BarTooltipItem(
-                        '${topItems[group.x.toInt()]['product_name']}\nQty: ${rod.toY.toInt()}',
-                        const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      );
-                    },
+                    getTooltipItem: (group, gi, rod, ri) => BarTooltipItem(
+                      '${topItems[group.x.toInt()]['product_name']}\nQty: ${rod.toY.toInt()}',
+                      const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ),
                 barGroups: topItems.asMap().entries.map((e) {
@@ -433,12 +788,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     sideTitles: SideTitles(
                       showTitles: true,
                       getTitlesWidget: (value, meta) {
-                        if (value.toInt() >= topItems.length)
-                          return const SizedBox();
+                        final i = value.toInt();
+                        if (i >= topItems.length) return const SizedBox();
                         return Padding(
                           padding: const EdgeInsets.only(top: 8.0),
                           child: Text(
-                            topItems[value.toInt()]['product_name']
+                            topItems[i]['product_name']
                                 .toString()
                                 .split(' ')
                                 .first,
@@ -454,8 +809,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
                       showTitles: true,
                       reservedSize: 30,
                       getTitlesWidget: (value, meta) {
-                        if (value == 0 || value % 1 != 0)
+                        if (value == 0 || value % 1 != 0) {
                           return const SizedBox();
+                        }
                         return Padding(
                           padding: const EdgeInsets.only(right: 8.0),
                           child: Text(
@@ -478,14 +834,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   ),
                 ),
                 borderData: FlBorderData(show: false),
-                gridData: FlGridData(
-                  show: true,
-                  drawVerticalLine: false,
-                  getDrawingHorizontalLine: (value) => FlLine(
-                    color: Colors.grey.withOpacity(0.2),
-                    strokeWidth: 1,
-                  ),
-                ),
+                gridData: _gridData(),
               ),
             )
           : PieChart(
@@ -510,68 +859,21 @@ class _ReportsScreenState extends State<ReportsScreen> {
             ),
     );
   }
-
-  Future<Map<String, dynamic>> _loadData() async {
-    List<double> weeklySales = [];
-    List<Map<String, double>> weeklyShifts = [];
-
-    for (int i = 6; i >= 0; i--) {
-      final d = _selectedDate.subtract(Duration(days: i));
-      weeklySales.add(await _repo.fetchDailySalesSummary(d));
-      weeklyShifts.add(await _repo.fetchShiftSummary(d));
-    }
-
-    Map<String, double> methods = {'cash': 0, 'qris': 0};
-    List<Map<String, dynamic>> topItems = <Map<String, dynamic>>[];
-
-    try {
-      methods = await _repo.fetchPaymentMethodBreakdown(_selectedDate);
-    } catch (_) {}
-    try {
-      topItems = await _repo.fetchTopSellingItems(
-        date: _selectedDate,
-        limit: 5,
-      );
-    } catch (_) {}
-
-    return {
-      'weekly_sales': weeklySales,
-      'payment_methods': methods,
-      'top_items': topItems,
-      'weekly_shifts': weeklyShifts,
-    };
-  }
 }
 
+// ── Utilities ──────────────────────────────────────────────────────────────────
+
 String _formatFull(double value) {
-  // Formats 1900000.0 into 1.900.000
   return value
       .toStringAsFixed(0)
       .replaceAllMapped(
         RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
-        (Match m) => '${m[1]}.',
+        (m) => '${m[1]}.',
       );
 }
 
-String _formatDateShort(DateTime date) {
-  const months = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ];
-  return '${date.day} ${months[date.month - 1]}';
-}
+// ── Shared widgets ─────────────────────────────────────────────────────────────
 
-// Helper Widget for custom chart legends
 class _LegendItem extends StatelessWidget {
   final Color color;
   final String text;
@@ -614,11 +916,14 @@ class _ChartCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 if (action != null) action!,

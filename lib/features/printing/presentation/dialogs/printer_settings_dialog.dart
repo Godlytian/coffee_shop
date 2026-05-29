@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:blue_thermal_printer/blue_thermal_printer.dart';
-import 'package:coffee_shop/features/printing/services/thermal_printer_service.dart';
+import 'package:coffee_shop/features/printing/data/thermal_printer_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';

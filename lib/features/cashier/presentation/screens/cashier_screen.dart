@@ -6,16 +6,16 @@ import 'dart:io';
 import 'package:coffee_shop/core/constants/order_status.dart';
 import 'package:coffee_shop/core/services/supabase_client.dart';
 import 'package:coffee_shop/core/services/order_sync_service.dart';
-import 'package:coffee_shop/core/services/local_order_store_repository.dart';
-import 'package:coffee_shop/core/services/local_order_item_store_repository.dart';
+import 'package:coffee_shop/core/repositories/local_order_store_repository.dart';
+import 'package:coffee_shop/core/repositories/local_order_item_store_repository.dart';
 import 'package:coffee_shop/core/utils/formatters.dart';
 import 'package:coffee_shop/features/cashier/models/models.dart';
 import 'package:coffee_shop/features/cashier/providers/cart_provider.dart';
 import 'package:coffee_shop/features/cashier/data/offline_shift_repository.dart';
 import 'package:coffee_shop/features/printing/presentation/dialogs/printer_settings_dialog.dart';
-import 'package:coffee_shop/features/printing/services/thermal_printer_service.dart';
+import 'package:coffee_shop/features/printing/data/thermal_printer_service.dart';
 import 'package:coffee_shop/features/reports/presentation/screens/reports_screen.dart';
-import 'package:coffee_shop/features/reports/presentation/sync_screen.dart';
+import 'package:coffee_shop/features/reports/presentation/screens/sync_screen.dart';
 import 'package:coffee_shop/features/cashier/presentation/screens/split_bill_screen.dart';
 import 'package:coffee_shop/core/services/order_notification_service.dart';
 import 'package:flutter/material.dart';
@@ -368,9 +368,6 @@ class _ProductListScreenState extends State<ProductListScreen>
     _onlinePaidOrdersCountNotifier.dispose();
     _selectedCategoryNotifier.dispose();
     _isCartExpandedNotifier.dispose();
-    _selectedCategoryNotifier.dispose();
-    _isCartExpandedNotifier.dispose();
-    _snackbarAnimationController?.dispose();
     _snackbarAnimationController?.dispose();
     _snackbarOverlayEntry?.remove();
     _filteredProductsNotifier.dispose();
@@ -508,7 +505,8 @@ class _ProductListScreenState extends State<ProductListScreen>
           .select(
             'order_id, quantity, product_id, modifiers, products(*), orders!inner(deleted_at)',
           )
-          .isFilter('orders.deleted_at', null);
+          .isFilter('orders.deleted_at', null)
+          .order('id', ascending: false);
 
       final rows = (orderItemsData as List<dynamic>)
           .whereType<Map>()
@@ -2430,8 +2428,14 @@ class _ProductListScreenState extends State<ProductListScreen>
     int? parentOrderId,
     String? extraNote,
   }) async {
-    final orderId = await _generateDailyUniqueOrderId();
-    await supabase.from('orders').insert({
+    final isOffline = _isOfflineMode;
+    // Offline: use epoch-ms temp ID (>= 13 digits) to avoid Supabase call.
+    final int orderId = isOffline
+        ? DateTime.now().millisecondsSinceEpoch
+        : await _generateDailyUniqueOrderId();
+    final notes = _buildOrderNotes(tableName: tableName, extraNote: extraNote);
+    final createdAt = DateTime.now().toUtc().toIso8601String();
+    final orderRow = <String, dynamic>{
       'id': orderId,
       'status': 'active',
       'type': orderType,
@@ -2448,9 +2452,13 @@ class _ProductListScreenState extends State<ProductListScreen>
       'parent_order_id': parentOrderId,
       'cashier_id': _activeCashierId,
       'shift_id': _activeShiftId,
-      'notes': _buildOrderNotes(tableName: tableName, extraNote: extraNote),
-    });
-
+      'notes': notes,
+      'created_at': createdAt,
+    };
+    if (!isOffline) {
+      await supabase.from('orders').insert(orderRow);
+    }
+    await LocalOrderStoreRepository.instance.upsertOrder(orderRow);
     return orderId;
   }
 
@@ -2481,27 +2489,69 @@ class _ProductListScreenState extends State<ProductListScreen>
     int sourceOrderId, {
     String? extraNote,
   }) async {
-    final remaining = await _fetchOrderItemRows(sourceOrderId);
-    if (remaining.isNotEmpty) {
-      return false;
-    }
+    final isOffline = _isOfflineMode;
+    final cart = context.read<CartProvider>();
 
-    final existingOrder = await supabase
-        .from('orders')
-        .select('notes')
-        .eq('id', sourceOrderId)
-        .single();
-    final existingNotes = existingOrder['notes']?.toString();
+    // Check remaining items — use local cache if offline.
+    final List<Map<String, dynamic>> remaining;
+    if (isOffline) {
+      remaining = await LocalOrderItemStoreRepository.instance.fetchByOrderId(
+        sourceOrderId,
+      );
+    } else {
+      remaining = await _fetchOrderItemRows(sourceOrderId);
+    }
+    if (remaining.isNotEmpty) return false;
+
+    // Get existing notes — use local cache if offline.
+    final String? existingNotes;
+    if (isOffline) {
+      final allOrders =
+          await LocalOrderStoreRepository.instance.fetchAllOrders();
+      final localOrder = allOrders.firstWhere(
+        (r) => ((r['id'] as num?)?.toInt() ?? -1) == sourceOrderId,
+        orElse: () => <String, dynamic>{},
+      );
+      existingNotes = localOrder['notes']?.toString();
+    } else {
+      final existingOrder = await supabase
+          .from('orders')
+          .select('notes')
+          .eq('id', sourceOrderId)
+          .single();
+      existingNotes = existingOrder['notes']?.toString();
+    }
 
     final updatedNotes = _buildOrderNotes(
       tableName: _tableNameFromNotes(existingNotes),
       extraNote: extraNote,
     );
 
-    await supabase
-        .from('orders')
-        .update({'status': OrderStatus.cancelled, 'notes': updatedNotes})
-        .eq('id', sourceOrderId);
+    if (isOffline) {
+      final allOrders =
+          await LocalOrderStoreRepository.instance.fetchAllOrders();
+      final existing = allOrders.firstWhere(
+        (r) => ((r['id'] as num?)?.toInt() ?? -1) == sourceOrderId,
+        orElse: () => <String, dynamic>{},
+      );
+      await LocalOrderStoreRepository.instance.upsertOrder({
+        ...existing,
+        'id': sourceOrderId,
+        'status': OrderStatus.cancelled,
+        'notes': updatedNotes,
+      });
+      await cart.enqueueOrderCancel(
+        orderId: sourceOrderId,
+        notes: updatedNotes,
+      );
+    } else {
+      await supabase
+          .from('orders')
+          .update({'status': OrderStatus.cancelled, 'notes': updatedNotes})
+          .eq('id', sourceOrderId);
+      // Remove from local store so it stops appearing in active-order streams.
+      await LocalOrderStoreRepository.instance.deleteOrder(sourceOrderId);
+    }
     return true;
   }
 

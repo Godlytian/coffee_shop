@@ -1,0 +1,218 @@
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
+
+CREATE TABLE public.cart_groups (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  order_id bigint NOT NULL,
+  group_index integer NOT NULL,
+  group_name text,
+  payment_status text NOT NULL DEFAULT 'unpaid'::text CHECK (payment_status = ANY (ARRAY['pending'::text, 'unpaid'::text, 'partially_paid'::text, 'paid'::text])),
+  amount_paid numeric NOT NULL DEFAULT 0,
+  display_order integer,
+  closed_at timestamp with time zone,
+  closed_by bigint,
+  CONSTRAINT cart_groups_pkey PRIMARY KEY (id),
+  CONSTRAINT cart_groups_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT cart_groups_closed_by_fkey FOREIGN KEY (closed_by) REFERENCES public.cashier(id)
+);
+CREATE TABLE public.cashier (
+  id bigint NOT NULL DEFAULT nextval('cashier_id_seq'::regclass),
+  name text NOT NULL,
+  code text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT cashier_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.fcm_tokens (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  user_id uuid NOT NULL,
+  token text NOT NULL UNIQUE,
+  created_at timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT fcm_tokens_pkey PRIMARY KEY (id),
+  CONSTRAINT fcm_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
+CREATE TABLE public.group_items (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  group_id uuid NOT NULL,
+  order_item_id bigint NOT NULL,
+  assigned_qty integer NOT NULL DEFAULT 1 CHECK (assigned_qty > 0),
+  CONSTRAINT group_items_pkey PRIMARY KEY (id),
+  CONSTRAINT group_items_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.cart_groups(id),
+  CONSTRAINT group_items_order_item_id_fkey FOREIGN KEY (order_item_id) REFERENCES public.order_items(id)
+);
+CREATE TABLE public.order_items (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  order_id bigint,
+  product_id bigint,
+  quantity integer DEFAULT 1,
+  price_at_time numeric NOT NULL,
+  notes text,
+  modifiers jsonb,
+  is_split boolean NOT NULL DEFAULT false,
+  parent_item_id bigint,
+  is_active boolean NOT NULL DEFAULT true,
+  split_batch_id uuid,
+  payment_status text DEFAULT 'unpaid'::text,
+  batch_id text,
+  created_at timestamp with time zone,
+  CONSTRAINT order_items_pkey PRIMARY KEY (id),
+  CONSTRAINT order_items_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT order_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id),
+  CONSTRAINT order_items_parent_item_id_fkey FOREIGN KEY (parent_item_id) REFERENCES public.order_items(id)
+);
+CREATE TABLE public.orders (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+  customer_name text NOT NULL,
+  total_price numeric NOT NULL,
+  status text DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'paid'::text, 'active'::text, 'processing'::text, 'completed'::text, 'cancelled'::text])),
+  user_id uuid,
+  subtotal numeric DEFAULT 0,
+  discount_total numeric DEFAULT 0,
+  promo_code_used text,
+  points_earned integer DEFAULT 0,
+  points_used integer NOT NULL DEFAULT 0 CHECK (points_used >= 0),
+  customer_phone text,
+  address text,
+  maps_link text,
+  type text NOT NULL DEFAULT 'takeaway'::text CHECK (type = ANY (ARRAY['delivery'::text, 'takeaway'::text, 'dine_in'::text])),
+  courier_phone text,
+  notes text,
+  order_source text NOT NULL DEFAULT 'online'::text CHECK (order_source = ANY (ARRAY['online'::text, 'cashier'::text])),
+  payment_method text CHECK (payment_method IS NULL OR (payment_method = ANY (ARRAY['cash'::text, 'qris'::text]))),
+  total_payment_received numeric,
+  change_amount numeric,
+  parent_order_id bigint,
+  cashier_id bigint,
+  shift_id bigint,
+  deleted_at timestamp without time zone,
+  payment_token text,
+  table_number text,
+  session_status text DEFAULT 'open'::text,
+  CONSTRAINT orders_pkey PRIMARY KEY (id),
+  CONSTRAINT orders_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id),
+  CONSTRAINT orders_parent_order_fk FOREIGN KEY (parent_order_id) REFERENCES public.orders(id),
+  CONSTRAINT orders_cashier_id_fkey FOREIGN KEY (cashier_id) REFERENCES public.cashier(id),
+  CONSTRAINT orders_shift_id_fkey FOREIGN KEY (shift_id) REFERENCES public.shifts(id)
+);
+CREATE TABLE public.payments (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  master_order_id bigint,
+  midtrans_transaction_id text NOT NULL UNIQUE,
+  amount numeric NOT NULL,
+  status text DEFAULT 'pending'::text,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT payments_pkey PRIMARY KEY (id),
+  CONSTRAINT payments_master_order_id_fkey FOREIGN KEY (master_order_id) REFERENCES public.orders(id)
+);
+CREATE TABLE public.points_ledger (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  order_id bigint,
+  entry_type text NOT NULL CHECK (entry_type = ANY (ARRAY['earn'::text, 'redeem'::text, 'expire'::text, 'adjustment'::text, 'refund'::text])),
+  points_delta integer NOT NULL,
+  reason text,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT points_ledger_pkey PRIMARY KEY (id),
+  CONSTRAINT points_ledger_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id),
+  CONSTRAINT points_ledger_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
+);
+CREATE TABLE public.product_bundles (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  parent_product_id bigint,
+  child_product_id bigint,
+  quantity integer DEFAULT 1,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()),
+  CONSTRAINT product_bundles_pkey PRIMARY KEY (id),
+  CONSTRAINT product_bundles_parent_product_id_fkey FOREIGN KEY (parent_product_id) REFERENCES public.products(id),
+  CONSTRAINT product_bundles_child_product_id_fkey FOREIGN KEY (child_product_id) REFERENCES public.products(id)
+);
+CREATE TABLE public.product_favorites (
+  user_id uuid NOT NULL,
+  product_id bigint NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT product_favorites_pkey PRIMARY KEY (user_id, product_id),
+  CONSTRAINT product_favorites_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id),
+  CONSTRAINT product_favorites_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id)
+);
+CREATE TABLE public.products (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT timezone('utc'::text, now()),
+  name text NOT NULL,
+  price numeric NOT NULL,
+  image_url text,
+  category text,
+  description text,
+  is_available boolean DEFAULT true,
+  is_bundle boolean DEFAULT false,
+  modifiers jsonb DEFAULT '[]'::jsonb,
+  is_recommended boolean NOT NULL DEFAULT false,
+  CONSTRAINT products_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.profiles (
+  id uuid NOT NULL,
+  email text,
+  full_name text,
+  role text DEFAULT 'customer'::text CHECK (role = ANY (ARRAY['customer'::text, 'terminal'::text, 'admin'::text])),
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()),
+  points_balance integer NOT NULL DEFAULT 0 CHECK (points_balance >= 0),
+  CONSTRAINT profiles_pkey PRIMARY KEY (id),
+  CONSTRAINT profiles_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id)
+);
+CREATE TABLE public.promotion_targets (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  promotion_id uuid,
+  target_product_id bigint,
+  target_category text,
+  CONSTRAINT promotion_targets_pkey PRIMARY KEY (id),
+  CONSTRAINT promotion_targets_promotion_id_fkey FOREIGN KEY (promotion_id) REFERENCES public.promotions(id),
+  CONSTRAINT promotion_targets_target_product_id_fkey FOREIGN KEY (target_product_id) REFERENCES public.products(id)
+);
+CREATE TABLE public.promotions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  code text NOT NULL UNIQUE,
+  description text,
+  type text NOT NULL CHECK (type = ANY (ARRAY['percentage'::text, 'fixed_amount'::text])),
+  value numeric NOT NULL,
+  scope text NOT NULL CHECK (scope = ANY (ARRAY['order'::text, 'category'::text, 'product'::text])),
+  min_order_value numeric DEFAULT 0,
+  min_quantity integer DEFAULT 0,
+  starts_at timestamp with time zone DEFAULT now(),
+  ends_at timestamp with time zone,
+  is_active boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT promotions_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.shifts (
+  id bigint NOT NULL DEFAULT nextval('shifts_id_seq'::regclass),
+  branch_id text NOT NULL,
+  started_at timestamp with time zone NOT NULL DEFAULT now(),
+  ended_at timestamp with time zone,
+  status text NOT NULL DEFAULT 'open'::text,
+  current_cashier_id bigint,
+  opened_by bigint,
+  closed_by bigint,
+  CONSTRAINT shifts_pkey PRIMARY KEY (id),
+  CONSTRAINT shifts_current_cashier_id_fkey FOREIGN KEY (current_cashier_id) REFERENCES public.cashier(id),
+  CONSTRAINT shifts_opened_by_fkey FOREIGN KEY (opened_by) REFERENCES public.cashier(id),
+  CONSTRAINT shifts_closed_by_fkey FOREIGN KEY (closed_by) REFERENCES public.cashier(id)
+);
+CREATE TABLE public.space_reservations (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  customer_name text NOT NULL,
+  phone text NOT NULL,
+  event_date date NOT NULL,
+  start_time time without time zone NOT NULL,
+  end_time time without time zone NOT NULL,
+  guest_count integer NOT NULL DEFAULT 1 CHECK (guest_count > 0),
+  notes text,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'confirmed'::text, 'cancelled'::text, 'completed'::text])),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT space_reservations_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.store_settings (
+  id integer NOT NULL,
+  is_online_active boolean DEFAULT true,
+  cashier_last_seen timestamp with time zone DEFAULT now(),
+  CONSTRAINT store_settings_pkey PRIMARY KEY (id)
+);

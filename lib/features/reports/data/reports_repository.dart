@@ -8,12 +8,40 @@ class ReportsRepository {
 
   Future<Database> _openOrdersDb() async {
     final dbPath = await getDatabasesPath();
-    return openDatabase(p.join(dbPath, 'local_orders.db'));
+    return openDatabase(
+      p.join(dbPath, 'local_orders.db'),
+      onOpen: (db) async {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS local_orders (
+            id INTEGER PRIMARY KEY,
+            status TEXT,
+            sync_status TEXT NOT NULL DEFAULT 'synced',
+            order_source TEXT,
+            created_at TEXT,
+            payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        ''');
+      },
+    );
   }
 
   Future<Database> _openItemsDb() async {
     final dbPath = await getDatabasesPath();
-    return openDatabase(p.join(dbPath, 'local_order_items.db'));
+    return openDatabase(
+      p.join(dbPath, 'local_order_items.db'),
+      onOpen: (db) async {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS local_order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            sync_status TEXT NOT NULL DEFAULT 'synced',
+            payload_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        ''');
+      },
+    );
   }
 
   Future<List<int>> _fetchFinalizedOrderIdsInRange(DateTime date) async {
@@ -153,6 +181,197 @@ class ReportsRepository {
           .toList(growable: false);
     } on DatabaseException {
       return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<List<int>> _fetchFinalizedOrderIdsInDateRange(
+    DateTime start,
+    DateTime end,
+  ) async {
+    try {
+      final db = await _openOrdersDb();
+      final startStr =
+          DateTime(start.year, start.month, start.day).toIso8601String();
+      final endStr =
+          DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
+      final rows = await db.rawQuery(
+        r'''
+        SELECT id FROM local_orders
+        WHERE COALESCE(json_extract(payload_json, '$.status'), status) IN ('completed', 'paid')
+          AND COALESCE(created_at, json_extract(payload_json, '$.created_at')) >= ?
+          AND COALESCE(created_at, json_extract(payload_json, '$.created_at')) <= ?
+        ''',
+        [startStr, endStr],
+      );
+      return rows
+          .map((r) => (r['id'] as num?)?.toInt())
+          .whereType<int>()
+          .toList(growable: false);
+    } on DatabaseException {
+      return const <int>[];
+    }
+  }
+
+  Future<double> fetchSalesInRange(DateTime start, DateTime end) async {
+    try {
+      final db = await _openOrdersDb();
+      final startStr =
+          DateTime(start.year, start.month, start.day).toIso8601String();
+      final endStr =
+          DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
+      final rows = await db.rawQuery(
+        r'''
+        SELECT SUM(COALESCE(json_extract(payload_json, '$.total_price'), 0)) as total
+        FROM local_orders
+        WHERE COALESCE(json_extract(payload_json, '$.status'), status) IN ('completed', 'paid')
+          AND COALESCE(created_at, json_extract(payload_json, '$.created_at')) >= ?
+          AND COALESCE(created_at, json_extract(payload_json, '$.created_at')) <= ?
+        ''',
+        [startStr, endStr],
+      );
+      return (rows.first['total'] as num?)?.toDouble() ?? 0;
+    } on DatabaseException {
+      return 0;
+    }
+  }
+
+  Future<Map<String, double>> fetchPaymentMethodBreakdownRange(
+    DateTime start,
+    DateTime end,
+  ) async {
+    try {
+      final db = await _openOrdersDb();
+      final startStr =
+          DateTime(start.year, start.month, start.day).toIso8601String();
+      final endStr =
+          DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
+      final rows = await db.rawQuery(
+        r'''
+        SELECT COALESCE(json_extract(payload_json, '$.payment_method'), 'unknown') as method,
+               SUM(COALESCE(json_extract(payload_json, '$.total_price'), 0)) as total
+        FROM local_orders
+        WHERE COALESCE(json_extract(payload_json, '$.status'), status) IN ('completed', 'paid')
+          AND COALESCE(created_at, json_extract(payload_json, '$.created_at')) >= ?
+          AND COALESCE(created_at, json_extract(payload_json, '$.created_at')) <= ?
+        GROUP BY method
+        ''',
+        [startStr, endStr],
+      );
+      final totalAmt = rows.fold<double>(
+        0,
+        (sum, r) => sum + ((r['total'] as num?)?.toDouble() ?? 0),
+      );
+      if (totalAmt == 0) return {'cash': 0, 'qris': 0};
+      final result = <String, double>{};
+      for (final r in rows) {
+        final method = r['method']?.toString() ?? 'unknown';
+        result[method] = ((r['total'] as num?)?.toDouble() ?? 0) / totalAmt;
+      }
+      return result;
+    } on DatabaseException {
+      return {'cash': 0, 'qris': 0};
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> fetchTopSellingItemsInRange(
+    DateTime start,
+    DateTime end, {
+    int limit = 5,
+  }) async {
+    try {
+      final orderIds = await _fetchFinalizedOrderIdsInDateRange(start, end);
+      if (orderIds.isEmpty) return const <Map<String, dynamic>>[];
+      final db = await _openItemsDb();
+      final placeholders = List.filled(orderIds.length, '?').join(',');
+      final args = <Object>[...orderIds, limit];
+      final rows = await db.rawQuery('''
+        SELECT
+          COALESCE(json_extract(payload_json, '\$.products.name'),
+                   json_extract(payload_json, '\$.name'),
+                   'Product ' || COALESCE(json_extract(payload_json, '\$.product_id'), '?')) as product_name,
+          json_extract(payload_json, '\$.product_id') as product_id,
+          SUM(COALESCE(json_extract(payload_json, '\$.quantity'), 0)) as qty
+        FROM local_order_items
+        WHERE order_id IN ($placeholders)
+        GROUP BY product_id, product_name
+        ORDER BY qty DESC
+        LIMIT ?
+      ''', args);
+      return rows
+          .map(
+            (r) => {
+              'product_id': r['product_id'],
+              'product_name': r['product_name'],
+              'qty': r['qty'],
+            },
+          )
+          .toList(growable: false);
+    } on DatabaseException {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<Map<String, double>> fetchShiftSummaryInRange(
+    DateTime start,
+    DateTime end,
+  ) async {
+    try {
+      final db = await _openOrdersDb();
+      final startStr =
+          DateTime(start.year, start.month, start.day).toIso8601String();
+      final endStr =
+          DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
+
+      final rows = await db.rawQuery(
+        r'''
+        SELECT
+          json_extract(payload_json, '$.shift_id') as shift_id,
+          MIN(COALESCE(created_at, json_extract(payload_json, '$.created_at'))) as fallback_time,
+          SUM(COALESCE(json_extract(payload_json, '$.total_price'), 0)) as shift_total
+        FROM local_orders
+        WHERE COALESCE(json_extract(payload_json, '$.status'), status) IN ('completed', 'paid')
+          AND json_extract(payload_json, '$.shift_id') IS NOT NULL
+          AND COALESCE(created_at, json_extract(payload_json, '$.created_at')) >= ?
+          AND COALESCE(created_at, json_extract(payload_json, '$.created_at')) <= ?
+        GROUP BY json_extract(payload_json, '$.shift_id')
+        ''',
+        [startStr, endStr],
+      );
+
+      final shiftRepo = OfflineShiftRepository();
+      final cachedShifts = await shiftRepo.getCachedShifts();
+      final shiftTimeMap = <String, String>{};
+      for (final shift in cachedShifts) {
+        final sId =
+            shift['shift_id']?.toString() ?? shift['id']?.toString();
+        final startedAt = shift['started_at']?.toString();
+        if (sId != null && startedAt != null) shiftTimeMap[sId] = startedAt;
+      }
+
+      double shift1Total = 0;
+      double shift2Total = 0;
+
+      for (final row in rows) {
+        final shiftIdStr = row['shift_id']?.toString();
+        if (shiftIdStr == null) continue;
+        final startedAtStr =
+            shiftTimeMap[shiftIdStr] ?? row['fallback_time']?.toString();
+        if (startedAtStr == null) continue;
+        final parsed = DateTime.tryParse(startedAtStr);
+        if (parsed == null) continue;
+        final wita = (parsed.isUtc ? parsed : parsed.toUtc())
+            .add(const Duration(hours: 8));
+        final shiftTotal = (row['shift_total'] as num?)?.toDouble() ?? 0;
+        if (wita.hour >= 6 && wita.hour <= 12) {
+          shift1Total += shiftTotal;
+        } else {
+          shift2Total += shiftTotal;
+        }
+      }
+
+      return {'shift_1': shift1Total, 'shift_2': shift2Total};
+    } catch (_) {
+      return {'shift_1': 0, 'shift_2': 0};
     }
   }
 

@@ -1,6 +1,6 @@
-import 'package:coffee_shop/core/services/local_order_item_store_repository.dart';
-import 'package:coffee_shop/core/services/local_order_store_repository.dart';
-import 'package:coffee_shop/core/services/local_cart_group_store_repository.dart';
+import 'package:coffee_shop/core/repositories/local_order_item_store_repository.dart';
+import 'package:coffee_shop/core/repositories/local_order_store_repository.dart';
+import 'package:coffee_shop/core/repositories/local_cart_group_store_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SyncManager {
